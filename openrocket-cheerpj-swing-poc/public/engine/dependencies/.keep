@@ -1,0 +1,2 @@
+This directory holds dependency JARs discovered during the investigation phase.
+The real JAR files should be copied here after confirming the generated classpath.

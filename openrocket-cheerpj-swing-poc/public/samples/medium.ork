@@ -1,0 +1,14 @@
+# OpenRocket sample file: medium.ork
+# Placeholder content for a medium-sized design.
+
+<?xml version="1.0" encoding="UTF-8"?>
+<openrocket version="1.0" type="rocket">
+  <name>Medium Sample</name>
+  <stage>
+    <bodytube length="240" diameter="38" material="aluminum" />
+    <nosecone length="80" diameter="38" material="plastic" />
+    <transition length="20" diameterA="38" diameterB="30" />
+    <finset count="4" span="40" rootChord="30" tipChord="15" />
+    <motor mount="M1540" />
+  </stage>
+</openrocket>

@@ -1,0 +1,13 @@
+# OpenRocket sample file: small.ork
+# Placeholder content for browser-side file loading verification.
+# Replace with a real .ork file from the target OpenRocket build or sample set.
+
+<?xml version="1.0" encoding="UTF-8"?>
+<openrocket version="1.0" type="rocket">
+  <name>Small Sample</name>
+  <stage>
+    <bodytube length="120" diameter="25" material="aluminum" />
+    <nosecone length="50" diameter="25" material="plastic" />
+    <finset count="3" span="30" rootChord="20" tipChord="10" />
+  </stage>
+</openrocket>

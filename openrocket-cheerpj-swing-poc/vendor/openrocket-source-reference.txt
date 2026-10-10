@@ -1,0 +1,19 @@
+# OpenRocket source reference
+
+This repository intentionally does not include the real OpenRocket source or generated build outputs.
+
+The upstream source project is located here:
+
+- https://github.com/openrocket/openrocket
+
+The recommended workflow for the real validation phase is:
+
+1. Clone the upstream repository to a local working directory.
+2. Record the selected commit hash or release tag.
+3. Confirm the Java toolchain version required by that revision.
+4. Run the Gradle tasks to identify the generated JAR artifacts.
+5. Inspect the manifest, classpath entries, and candidate main class.
+6. Stage the generated JARs and resources into a browser-accessible directory.
+7. Launch the app under CheerpJ and measure startup, runtime, memory, and compatibility.
+
+This file is only a source reference note to keep the investigation process traceable.

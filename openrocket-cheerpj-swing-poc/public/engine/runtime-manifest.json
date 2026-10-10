@@ -1,0 +1,30 @@
+{
+  "runtime": {
+    "name": "CheerpJ",
+    "version": "4.3",
+    "loaderUrl": "https://cjrtnc.leaningtech.com/4.3/loader.js",
+    "jre": "Java runtime via CheerpJ",
+    "target": "Browser"
+  },
+  "application": {
+    "name": "OpenRocket",
+    "type": "Swing desktop research prototype",
+    "status": "placeholder",
+    "launchStrategy": "cheerpjRunJar / cheerpjRunMain",
+    "jar": "/app/engine/openrocket-app.jar",
+    "classPath": [
+      "/app/engine/openrocket-core.jar",
+      "/app/engine/openrocket-app.jar",
+      "/app/engine/dependencies/"
+    ],
+    "notes": [
+      "The actual OpenRocket JAR and dependency list must be verified from the upstream build output.",
+      "This file is a scaffold placeholder and not a production runtime manifest."
+    ]
+  },
+  "browser": {
+    "httpRoot": "/app/",
+    "assetPath": "/app/engine/",
+    "samplePath": "/app/samples/"
+  }
+}
