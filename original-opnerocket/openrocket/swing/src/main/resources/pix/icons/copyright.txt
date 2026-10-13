@@ -1,0 +1,16 @@
+
+Copyright of the icons:
+-----------------------
+
+
+From the "Nuvola" package by David Vignoni:
+http://www.icon-king.com/projects/nuvola/
+
+document-print.png
+pencil.png
+
+
+From the "Crystal" project:
+http://www.everaldo.com/crystal/
+
+delete.png

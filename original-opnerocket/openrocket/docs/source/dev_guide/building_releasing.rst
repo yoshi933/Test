@@ -1,0 +1,899 @@
+**********************
+Building and Releasing
+**********************
+
+This guide explains the build system of OpenRocket (Gradle), and how to release a new version of OpenRocket.
+
+.. contents:: Table of Contents
+   :depth: 2
+   :local:
+
+----
+
+Gradle
+======
+
+`Gradle <http://www.gradle.org/>`__ is the build system for OpenRocket. It is used to compile the source code, run tests, and create the JAR file.
+Key features of Gradle are:
+
+- **Incremental builds**: Gradle only rebuilds what is necessary, which makes the build process faster.
+
+- **Dependency management**: Gradle has a robust dependency management system capable of handling project and third-party libraries.
+
+- **Performance**: Gradle uses techniques like build caching and parallel execution to improve performance of the build process.
+
+The root directory of the OpenRocket repository contains several Gradle files:
+
+- ``build.gradle``: This is the main build script file where you define your project configuration and tasks such as compile and run tasks, dependency management, plugins usage, and more.
+
+- ``settings.gradle``: Used for multi-project build configurations to include which sub-projects should be part of the build.
+  For OpenRocket, this file is used to identify the ``core`` and ``swing`` sub-projects.
+
+- ``gradle.properties``: Contains project-wide Gradle settings such as warning and parallel build configuration.
+
+- ``core/src/main/resources/build.properties``: Defines the OpenRocket version and other build metadata that are embedded in the application and library artifacts.
+
+- ``gradlew`` and ``gradlew.bat``: These are Gradle Wrapper scripts for Unix-based and Windows systems respectively.
+  It allows users to run Gradle builds without requiring Gradle to be installed on the system.
+
+The ``core`` and ``swing`` sub-projects contain their own ``build.gradle`` and ``gradle.properties`` files that define the tasks specific to those sub-projects.
+
+Gradle in IntelliJ
+------------------
+
+If you use IntelliJ IDEA, you can access the Gradle tasks within the IDE. First, open the Gradle tool window by going to
+:menuselection:`View --> Tool Windows --> Gradle` or by clicking on the Gradle icon in the right-hand side of the window:
+
+.. figure:: /img/dev_guide/building_releasing/gradle_in_intellij.png
+   :align: center
+   :width: 80%
+   :alt: Opening the Gradle tool window in IntelliJ IDEA.
+
+   Opening the Gradle tool window in IntelliJ IDEA.
+
+This shows the following window:
+
+.. figure:: /img/dev_guide/building_releasing/intellij_gradle_window.png
+   :align: center
+   :width: 30%
+   :alt: The Gradle tool window in IntelliJ IDEA.
+
+   The Gradle tool window in IntelliJ IDEA.
+
+Here's a breakdown of the Gradle tasks:
+
+- *info.openrocket*: the root project
+   - *Tasks*: Gradle tasks specific to the root project.
+      - *application*: Contains tasks related to running or debugging your application from within the IDE.
+      - *build*: Includes tasks for building the entire project.
+      - *build setup*: Tasks for initializing a new Gradle build, such as creating new Gradle files.
+      - *distribution*: Tasks for assembling the application distribution, like creating zips or tarballs of the build outputs.
+      - *documentation*: Tasks for generating documentation, typically using tools like Javadoc.
+      - *help*: Provides tasks that list other tasks or project properties.
+      - *info.openrocket*: Custom tasks specific to the 'info.openrocket' module.
+      - *other*: Any other tasks that do not fit into the predefined categories.
+      - *shadow*: Related to the Shadow plugin, which packages the project’s artifacts along with its dependencies into a single "fat" JAR.
+      - *verification*: Tasks for testing and verifying the project, such as running unit tests.
+   - *Dependencies*: Lists the dependencies of the project.
+   - *Run Configurations*: Gradle run configurations that can be used in IntelliJ.
+- *core*: the core module
+   - *Tasks*: Gradle tasks specific to the 'core' module.
+   - *Dependencies*: Lists the dependencies of the 'core' module.
+- *swing*: the swing module
+   - *Tasks*: Gradle tasks specific to the 'swing' module.
+   - *Dependencies*: Lists the dependencies of the 'swing' module.
+
+Most Important Gradle Tasks
+---------------------------
+
+Here are some of the most important Gradle tasks for OpenRocket:
+
+.. list-table:: Most Important Gradle Tasks
+   :widths: 25 25 50
+   :header-rows: 1
+
+   *  - Module
+      - Task
+      - Description
+
+   *  - root (*info.openrocket*)
+      - ``clean``
+      - Deletes the build directory and all its contents (basically cleans up the project).
+
+   *  - root (*info.openrocket*)
+      - ``run``
+      - Runs the OpenRocket application.
+
+   *  - root (*info.openrocket*)
+      - ``check``
+      - Runs the unit tests and checks the code quality using the Checkstyle static analysis tool.
+
+   *  - root (*info.openrocket*)
+      - ``build``
+      - Compiles the source code, runs the unit tests, and creates the JAR file for the *core* and *swing* module.
+
+   *  - root (*info.openrocket*)
+      - ``dist``
+      - Runs ``check`` and builds and verifies the universal JAR and all six platform JARs in :file:`openrocket/build/libs`.
+
+   *  - root (*info.openrocket*)
+      - ``distributionJars``
+      - Builds the universal JAR and all six platform JARs without running checks.
+
+   *  - root (*info.openrocket*)
+      - ``verifyDistributionJars``
+      - Builds all distribution JARs and verifies native selection, manifests, and preservation of classes, resources, service descriptors and licenses.
+
+   *  - root (*info.openrocket*)
+      - ``distributionSmokeTest``
+      - Runs packaged SQLite, JavaScript, internationalization and native-loading checks against the universal JAR and the current platform JAR.
+
+   *  - core
+      - ``publishToMavenLocal``
+      - Builds the Maven Central library artifacts for the ``info.openrocket:core`` module and installs them into the local Maven repository for validation.
+
+   *  - core
+      - ``publish``
+      - Publishes the ``info.openrocket:core`` library artifacts to the configured Sonatype repository. For release versions this also signs the artifacts.
+
+   *  - core
+      - ``serializeEngines``
+      - Fetch the latest thrust curves from ThrustCurve.org and store them in the OpenRocket SQLite motor database. The resulting ``.db`` file is saved in the ``src`` dir so it can be used for a build.
+
+   *  - core
+      - ``serializeEnginesDist``
+      - Same as ``serializeEngines``, but loads the SQLite database file to the distribution directory (:file:`openrocket/build`) so it can be used in the final build.
+
+   *  - core
+      - ``updateBundledMotorDatabase``
+      - Replaces the bundled motor database (:file:`initial_motors.db` and :file:`metadata.json`) with the version published
+        at https://openrocket.info/motor-database/ if that one is newer.
+
+   *  - core
+      - ``submoduleUpdate``
+      - Updates the submodule dependencies of the *core* module.
+
+Desktop Distribution JARs
+-------------------------
+
+``shadowJar`` creates :file:`build/libs/OpenRocket-<version>.jar`, the standalone cross-platform download. Installer JARs
+are named :file:`build/libs/OpenRocket-<version>-<platform>.jar`. They retain the universal JAR's Java classes, application
+resources, service descriptors and licenses, with only native libraries for the selected OS and architecture. Linux
+variants include both glibc and musl SQLite libraries. Android SQLite libraries are excluded from all desktop distributions.
+
+.. list-table:: Installer JARs
+   :widths: 30 50 20
+   :header-rows: 1
+
+   *  - Platform classifier
+      - Gradle task
+      - install4j media ID
+   *  - ``windows-x64``
+      - ``shadowJarWindowsX64``
+      - 60
+   *  - ``windows-arm64``
+      - ``shadowJarWindowsArm64``
+      - 248
+   *  - ``macos-x64``
+      - ``shadowJarMacosX64``
+      - 213
+   *  - ``macos-arm64``
+      - ``shadowJarMacosArm64``
+      - 240
+   *  - ``linux-x64``
+      - ``shadowJarLinuxX64``
+      - 168
+   *  - ``linux-arm64``
+      - ``shadowJarLinuxArm64``
+      - 244
+
+Run ``./gradlew verifyDistributionJars distributionSmokeTest`` to build and validate the distribution artifacts. The smoke
+tests run with just the packaged JAR and their test harness on the classpath, so development dependencies cannot hide
+missing packaged classes or natives. They open the bundled motor database, invoke JavaScript callbacks and locale
+formatting, and load SQLite, JNA, FlatLaf and LWJGL native libraries without opening a GUI.
+
+CI builds and verifies all seven JARs on Linux and uploads them in the existing build artifact. Linux, Windows and macOS
+jobs smoke-test their own platform variants. Before a release, run ``distributionSmokeTest`` on each supported OS and
+architecture with a matching 64-bit JDK 17, then exercise 3D rendering and scripting in the installed application. An
+explicit ``-PdistributionTarget=<platform>`` selects a different variant but requires a matching host and JVM; it does not
+emulate another platform.
+
+The install4j media definitions override ``JAR_NAME`` for each platform, and both the distribution file and launcher
+classpath use that value. Set install4j's application version to ``build.version`` or pass ``--release=<version>`` to the
+compiler. The Windows signing workflow builds both Windows variants and smoke-tests the runner's variant before packaging.
+Publish the universal JAR as the standalone download and use the platform JARs when building installers.
+Snap builds also select the Linux variant on amd64 and arm64, while other Snap architectures keep using the universal JAR.
+
+Thrust Curve Motor Database
+===========================
+
+OpenRocket bundles a SQLite motor database at
+:file:`core/src/main/resources/datafiles/thrustcurves/initial_motors.db`, with its :file:`metadata.json`. It is a snapshot
+of the database published by `openrocket/motor-database <https://github.com/openrocket/motor-database>`__, which
+OpenRocket also downloads at runtime to keep the user's motor database up to date. The ``updateBundledMotorDatabase``
+task refreshes the snapshot, verifying the download the same way the application does. The **Update bundled motor
+database** workflow (:file:`.github/workflows/update-motor-database.yml`) runs that task monthly, runs the core tests,
+and opens a pull request when the snapshot changed. Pull requests opened by GitHub Actions do not start the Build
+workflow; close and reopen the pull request to run it. The workflow needs
+:menuselection:`Settings --> Actions --> General --> Allow GitHub Actions to create and approve pull requests` to be enabled.
+User-defined motor directories can also include ``.db`` files; these are validated for the expected schema before loading.
+
+You can run these tasks from the command line using the Gradle Wrapper scripts. For example for the task ``run``, run the
+following command in the root directory of the OpenRocket repository:
+
+.. code-block:: bash
+
+      # On macOS and Linux:
+      ./gradlew run
+
+      # On Windows:
+      gradlew.bat run
+
+.. _maven-central-publishing:
+
+Maven Central Publishing
+========================
+
+OpenRocket now has two distinct release tracks:
+
+- **Current and future releases**: publish proper Maven artifacts from the Gradle build.
+- **Older releases**: backfill missing historical versions by checking out the exact tag, producing a Central-compliant bundle for that version, and uploading it once.
+
+The published Maven Central library artifact is currently ``info.openrocket:core``. The root ``shadowJar`` output remains the desktop application distribution artifact and should not be treated as the main Maven Central library coordinate. The ``:swing`` module can be added later if there is a clear need to support it as a separate public library.
+
+For development snapshots, use a Maven-style snapshot version ending in ``-SNAPSHOT`` in :file:`core/src/main/resources/build.properties`, for example ``26.xx-SNAPSHOT``. Do not use ``.SNAPSHOT`` because Sonatype's snapshot repository expects the Maven ``-SNAPSHOT`` suffix.
+
+Central prerequisites
+---------------------
+
+Before publishing to Maven Central, make sure the following are available:
+
+- a Sonatype Central account that is authorized for the ``info.openrocket`` namespace
+- a Central Portal user token generated from ``https://central.sonatype.com/usertoken``
+- ``SONATYPE_USERNAME`` and ``SONATYPE_PASSWORD`` environment variables, or matching Gradle properties ``sonatypeUsername`` and ``sonatypePassword``. These values must be the Portal token username and password, not your GitHub login, full name, or email address.
+- an ASCII-armored PGP private key in ``SIGNING_KEY`` and its passphrase in ``SIGNING_PASSWORD``, or matching Gradle properties ``signingKey`` and ``signingPassword``
+- Git submodules checked out, because ``:core:processResources`` copies files from the ``openrocket-database`` submodule
+
+You can log in to ``https://central.sonatype.com`` using GitHub, but API publishing still uses the generated Portal token rather than the interactive login credentials. If the ``info.openrocket`` namespace was migrated from OSSRH and does not appear under a GitHub-backed login, sign in with the original OSSRH-linked account or contact Central Support to restore namespace access.
+
+Signing key setup
+-----------------
+
+Sonatype requires every published file to be signed with OpenPGP, which means the build needs access to a private signing key and its passphrase.
+
+The OpenRocket Gradle build uses Gradle's in-memory signing support, so it expects:
+
+- ``SIGNING_KEY``: the ASCII-armored private key block
+- ``SIGNING_PASSWORD``: the passphrase that protects that private key
+
+A typical setup flow is:
+
+1. Generate a new key pair if you do not already have one:
+
+   .. code-block:: bash
+
+      gpg --full-generate-key
+
+   Use the OpenRocket release identity you want associated with published artifacts. Sonatype's GPG guidance notes that keys often default to an expiration date, so make sure the key remains valid for the expected release window.
+
+2. List the available secret keys and note the key ID:
+
+   .. code-block:: bash
+
+      gpg --list-secret-keys --keyid-format LONG
+
+3. Publish the public key to a public key server so consumers can verify the signatures:
+
+   .. code-block:: bash
+
+      gpg --keyserver keyserver.ubuntu.com --send-keys <KEY_ID>
+
+4. Export the private key in ASCII-armored form for Gradle:
+
+   .. code-block:: bash
+
+      gpg --armor --export-secret-keys <KEY_ID> > openrocket-signing-key.asc
+
+5. Store the exported private key content and its passphrase in your shell or CI secrets:
+
+   .. code-block:: bash
+
+      export SIGNING_KEY="$(cat openrocket-signing-key.asc)"
+      export SIGNING_PASSWORD='<key-passphrase>'
+
+In CI, store the full armored key block exactly as a multiline secret value. The passphrase is the one you entered when generating the GPG key.
+
+If the signing key expires, extend it with ``gpg --edit-key <KEY_ID>`` and publish the updated public key to the key server again before the next release.
+
+Current and future releases
+---------------------------
+
+The Gradle build publishes the ``:core`` module with:
+
+- the main JAR
+- ``-sources.jar``
+- ``-javadoc.jar``
+- a POM with the metadata required by Maven Central
+- PGP signatures for release builds
+
+Use the following process for new releases:
+
+1. Build and validate the library artifacts locally:
+
+   .. code-block:: bash
+
+      export SONATYPE_USERNAME='<portal-token-username>'
+      export SONATYPE_PASSWORD='<portal-token-password>'
+      export SIGNING_KEY='<ascii-armored-private-key>'
+      export SIGNING_PASSWORD='<pgp-passphrase>'
+
+      ./gradlew :core:publishToMavenLocal
+
+2. Publish the release artifacts to Sonatype's staging compatibility endpoint:
+
+   .. code-block:: bash
+
+      ./gradlew :core:publish
+
+   Release versions publish to ``https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/``.
+   Snapshot versions publish to ``https://central.sonatype.com/repository/maven-snapshots/``.
+
+3. Transfer the staged repository into the Central Portal. Gradle's built-in ``maven-publish`` support uploads the artifacts, but Sonatype still requires a separate manual upload API call so the deployment appears in the Portal:
+
+   .. code-block:: bash
+
+      AUTH=$(printf "%s:%s" "$SONATYPE_USERNAME" "$SONATYPE_PASSWORD" | base64)
+
+      curl -X POST \
+        -H "Authorization: Bearer $AUTH" \
+        "https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/info.openrocket?publishing_type=automatic"
+
+   Use ``publishing_type=user_managed`` instead of ``automatic`` if you want to inspect and release the deployment manually in the Portal UI.
+
+4. Verify that the new version appears correctly in Central and that the published POM exposes the expected transitive dependencies for ``info.openrocket:core``.
+
+Checking whether publishing succeeded
+-------------------------------------
+
+Use different checks for snapshots and official releases.
+
+For ``-SNAPSHOT`` versions:
+
+1. Check the published snapshot metadata in the Central snapshot repository:
+
+   .. code-block:: text
+
+      https://central.sonatype.com/repository/maven-snapshots/info/openrocket/core/<version>/maven-metadata.xml
+
+   Example:
+
+   .. code-block:: text
+
+      https://central.sonatype.com/repository/maven-snapshots/info/openrocket/core/26.xx-SNAPSHOT/maven-metadata.xml
+
+2. Confirm that the metadata lists a timestamped snapshot build such as ``26.xx-20260409.121931-1`` and that the expected files are present:
+
+   - main JAR
+   - ``-sources.jar``
+   - ``-javadoc.jar``
+   - ``.pom``
+   - ``.module``
+
+3. Optionally verify consumption from another Gradle build:
+
+   .. code-block:: groovy
+
+      repositories {
+          maven {
+              name = "Central Portal Snapshots"
+              url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+              content {
+                  includeModule("info.openrocket", "core")
+              }
+          }
+          mavenCentral()
+      }
+
+      dependencies {
+          implementation("info.openrocket:core:<version>")
+      }
+
+``-SNAPSHOT`` publishes do not appear in the Central Portal deployments page and are not the same as final Maven Central releases.
+
+For official non-snapshot releases:
+
+1. Run ``./gradlew :core:publish``.
+2. Call the Sonatype manual upload endpoint described above.
+3. Open ``https://central.sonatype.com/publishing/deployments`` and confirm that the deployment for ``info.openrocket:core:<version>`` appears and passes validation.
+4. After release, verify that the final version is visible in the Central ecosystem and that the artifact can be resolved from ``mavenCentral()`` without the snapshot repository.
+
+Historical backfill
+-------------------
+
+Central artifacts are immutable. If a version already exists on Maven Central, do not attempt to republish or replace it.
+
+For historical versions that are missing from Central, work one release tag at a time:
+
+1. Check whether the version already exists on Central. Stop if it does.
+2. Check out the exact release tag that should be backfilled.
+3. Build artifacts that match that tag exactly.
+4. Publish that version once, without reusing files from newer releases.
+
+For Gradle-era tags, prefer the same ``:core`` publication flow described above.
+
+For older Ant-era tags, it is usually easier to create a Central bundle manually instead of retrofitting the modern Gradle publishing pipeline. Build the original binary JAR from that tag, generate a minimal compliant POM, create matching source and javadoc JARs from the checked-out source tree, sign every file, and upload the result as a bundle.
+
+A typical bundle layout looks like this:
+
+.. code-block:: text
+
+   info/openrocket/core/23.09/
+     core-23.09.jar
+     core-23.09.pom
+     core-23.09-sources.jar
+     core-23.09-javadoc.jar
+     core-23.09.jar.asc
+     core-23.09.pom.asc
+     core-23.09-sources.jar.asc
+     core-23.09-javadoc.jar.asc
+     core-23.09.jar.md5
+     core-23.09.jar.sha1
+     ...
+
+Upload the bundle with the Central Portal API:
+
+.. code-block:: bash
+
+   AUTH=$(printf "%s:%s" "$SONATYPE_USERNAME" "$SONATYPE_PASSWORD" | base64)
+
+   curl --request POST \
+     --header "Authorization: Bearer $AUTH" \
+     --form bundle=@central-bundle.zip \
+     "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
+
+install4j
+=========
+
+`install4j <http://www.ej-technologies.com/products/install4j/overview.html>`__ is used to create the packaged installers for OpenRocket from the JAR file.
+install4j generously provides a free license for open source projects, including OpenRocket. Currently, only the OpenRocket administrators have access
+to the install4j license.
+
+Code Signing
+------------
+
+An important part of generating the installers is `code signing <https://en.wikipedia.org/wiki/Code_signing>`__.
+This is done to ensure that the installer is not tampered with between the time it is created and the time it is run by the user.
+Once the OpenRocket installer has been code signed, users will receive no more (or the minimum amount of) warnings from
+their operating system that the installer is from an unknown source and may contain malware.
+More information on how to do code signing in install4j can be found `here <https://www.ej-technologies.com/resources/install4j/help/doc/concepts/codeSigning.html>`__.
+
+Only the OpenRocket administrators have access to the macOS code signing certificate. The Windows private key is held by
+SignPath and is not stored in the repository or in GitHub Actions.
+
+Windows code signing with SignPath
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Windows installers are built and signed by the ``Build and sign Windows installers`` GitHub Actions workflow in
+:file:`.github/workflows/build-windows.yml`. The workflow:
+
+1. builds the OpenRocket distribution JAR from the selected commit;
+2. builds the Explorer thumbnail handler (``OrkThumbnailHandler.dll``) from the
+   `openrocket/Windows-ork-Preview <https://github.com/openrocket/Windows-ork-Preview>`__ commit pinned by
+   ``WINDOWS_ORK_PREVIEW_REF`` in the workflow, submits it to SignPath, and verifies the returned signature;
+3. downloads the install4j version pinned in :file:`.github/actions/setup-install4j/action.yml` and verifies its SHA-256
+   checksum;
+4. builds the x86-64 and Arm64 installers with install4j code signing disabled, including the signed thumbnail handler;
+5. uploads both unsigned installers as one GitHub workflow artifact;
+6. submits that artifact to SignPath and waits for approval and signing;
+7. verifies both returned Authenticode signatures and uploads the signed installers as a separate workflow artifact.
+
+Each run therefore makes two SignPath signing requests, and each needs its own approval. Only the thumbnail handler is
+signed: ``SharpShell.dll``, the upstream library it depends on, is shipped unsigned as distributed on NuGet, because the
+SignPath Foundation only allows signing binaries built from OpenRocket's own source code. To update the thumbnail handler,
+change ``WINDOWS_ORK_PREVIEW_REF`` to the new full commit SHA.
+
+This arrangement lets SignPath verify the GitHub repository, commit, workflow, and GitHub-hosted runner that produced the
+artifact. Never publish the ``openrocket-windows-unsigned-*`` workflow artifact. It is retained only long enough for SignPath
+to retrieve it. The install4j project also pins the bundled Liberica JRE; update that version deliberately and validate both
+Windows installers whenever the runtime is upgraded.
+
+One-time SignPath website configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Configure the following at ``https://app.signpath.io``. The exact organization ID and slugs are shown on the SignPath
+signing-policy details page. SignPath's `GitHub integration documentation <https://docs.signpath.io/trusted-build-systems/github>`__
+describes the corresponding connector and GitHub App settings.
+
+The ``release-signing`` and ``test-signing`` pages are signing policies; they control the certificate, submitters,
+approvals, and origin restrictions. Artifact configurations and trusted build systems are separate sections on the
+OpenRocket project's overview page. Return to the project overview before performing steps 2 and 3 below.
+
+1. Add the predefined ``GitHub.com`` trusted build system to the SignPath organization. Install the SignPath GitHub App and
+   grant it access to ``openrocket/openrocket``.
+2. Create or open the OpenRocket project, set its repository URL to ``https://github.com/openrocket/openrocket``, and link the
+   ``GitHub.com`` trusted build system to the project.
+3. In the project's :guilabel:`Artifact Configurations` section, select :guilabel:`Add`, then :guilabel:`Custom`. Create a
+   configuration with a stable slug such as ``windows-installers`` and paste the XML below. The GitHub upload is a ZIP
+   containing exactly two PE files. The configuration matches the install4j filenames and enforces the metadata required
+   by the SignPath Foundation:
+
+   .. code-block:: xml
+
+      <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+        <parameters>
+          <parameter name="version" required="true" />
+        </parameters>
+        <zip-file>
+          <pe-file-set company-name="OpenRocket"
+                       copyright="OpenRocket"
+                       file-version="${version}"
+                       original-filename="${file.name}"
+                       product-name="OpenRocket"
+                       product-version="${version}">
+            <include path="OpenRocket-${version}-installer-Windows-*.exe"
+                     min-matches="2" max-matches="2" />
+            <for-each>
+              <authenticode-sign />
+            </for-each>
+          </pe-file-set>
+        </zip-file>
+      </artifact-configuration>
+
+   SignPath recommends generating a configuration by uploading an unsigned sample first. If you do that, compare the
+   generated configuration with the restrictions above and make sure it signs only the two OpenRocket installer files.
+
+   Create a second configuration with a slug such as ``windows-shell-extension`` for the thumbnail handler. Its upload is a
+   ZIP containing only ``OrkThumbnailHandler.dll``, whose product version is the OpenRocket version:
+
+   .. code-block:: xml
+
+      <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+        <parameters>
+          <parameter name="version" required="true" />
+        </parameters>
+        <zip-file>
+          <pe-file-set company-name="OpenRocket"
+                       original-filename="${file.name}"
+                       product-name="OpenRocket"
+                       product-version="${version}">
+            <include path="OrkThumbnailHandler.dll" min-matches="1" max-matches="1" />
+            <for-each>
+              <authenticode-sign />
+            </for-each>
+          </pe-file-set>
+        </zip-file>
+      </artifact-configuration>
+4. Open the ``release-signing`` signing policy. Select the OpenRocket release certificate, require a manual approval, allow
+   only the dedicated CI user to submit, assign the OpenRocket approvers, enable trusted-build-system and origin
+   verification, and restrict the origin to the protected release branch. The repository URL comes from the project
+   settings. The artifact configuration is not selected on this page; the GitHub workflow supplies its slug with each
+   signing request.
+5. Create an API token for the dedicated CI user. The user needs submitter permission for the project and release signing
+   policy; it does not need approval permission.
+
+One-time GitHub configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In :menuselection:`GitHub repository --> Settings --> Secrets and variables --> Actions`, add:
+
+.. list-table:: GitHub Actions configuration
+   :widths: 35 65
+   :header-rows: 1
+
+   *  - Name
+      - Value
+   *  - Secret ``SIGNPATH_API_TOKEN``
+      - API token for the dedicated SignPath CI user.
+   *  - Secret ``INSTALL4J_LICENSE_KEY``
+      - The install4j license key supplied to OpenRocket by ej-technologies.
+   *  - Variable ``SIGNPATH_ORGANIZATION_ID``
+      - SignPath organization ID.
+   *  - Variable ``SIGNPATH_PROJECT_SLUG``
+      - OpenRocket project slug.
+   *  - Variable ``SIGNPATH_SIGNING_POLICY_SLUG``
+      - Release signing policy slug.
+   *  - Variable ``SIGNPATH_ARTIFACT_CONFIGURATION_SLUG``
+      - Windows installer artifact configuration slug.
+   *  - Variable ``SIGNPATH_SHELL_EXTENSION_ARTIFACT_CONFIGURATION_SLUG``
+      - Thumbnail handler artifact configuration slug.
+
+The SignPath API token and install4j license are secrets. IDs and slugs are identifiers and should be repository variables,
+which makes configuration errors easier to diagnose without exposing credentials.
+
+Running and validating a Windows signing build
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+1. Set ``build.version`` in :file:`core/src/main/resources/build.properties` to the release version and merge the release
+   commit into the branch allowed by the SignPath signing policy.
+2. Open :menuselection:`GitHub --> Actions --> Build and sign Windows installers`, select :guilabel:`Run workflow`, and select that
+   branch. Do not approve a request built from an unexpected repository, branch, commit, or workflow run.
+3. An approver reviews the verified origin and artifact details in SignPath, then approves the signing requests: first the
+   thumbnail handler, then the installers.
+4. After the workflow succeeds, download ``openrocket-windows-signed-<run number>`` from the workflow run. Those are the
+   Windows release installers. The workflow rejects missing or invalid Authenticode signatures before uploading them.
+5. Test both architectures as appropriate. Use the ``SHA256SUMS.txt`` in that artifact for release checksums; it is computed
+   from the signed files. Checksums produced by install4j before signing are no longer valid after SignPath adds the
+   signatures.
+
+.. note::
+   SignPath signs the two outer install4j installer executables. SignPath treats PE files as non-composite artifacts, so this
+   workflow does not deep-sign the install4j launcher embedded inside each installer. Signing the installed launcher as well
+   would require an install4j-compatible SignPath crypto provider or a package format that SignPath supports for deep signing.
+   The outer signature is the one Windows evaluates when a downloaded installer is launched. The thumbnail handler is the
+   exception: it is loaded into Explorer, so it is signed separately before install4j packages it.
+
+For Microsoft Defender SmartScreen submission instructions, see the
+`install4j README <https://github.com/openrocket/openrocket/blob/unstable/install4j/README.md>`__.
+
+For macOS, the code signing is done using an Apple Developer ID. Besides code signing, the OpenRocket app also needs to
+be notarized. Luckily, install4j takes care of this. More information on the code signing procedure for macOS can be found in the
+`README file on GitHub <https://github.com/openrocket/openrocket/blob/unstable/install4j/README.md>`__.
+
+Linux does not require code signing.
+
+Building the Linux installers with GitHub Actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The **Build Linux installers** workflow (:file:`.github/workflows/build-linux.yml`) builds both Linux installers (x86_64 and
+ARM64) with install4j and uploads them, together with a ``SHA256SUMS.txt`` file, as the ``openrocket-linux-<run number>``
+workflow artifact. It only needs the ``INSTALL4J_LICENSE_KEY`` secret. To run it, open
+:menuselection:`GitHub --> Actions --> Build Linux installers`, select :guilabel:`Run workflow`, and select the release branch.
+
+Creating the Installers
+-----------------------
+
+First run ``./gradlew dist distributionSmokeTest`` (see above). This builds and verifies all installer JARs as well as the
+universal JAR. Set install4j's application version to the same value as ``build.version``; each media definition then selects
+its matching platform JAR automatically.
+
+Then, open install4j (requires a license) and load the project file *openrocket/install4j/openrocket.install4j*
+from the repository. Go to the :menuselection:`Build` tab and click on the :guilabel:`Start Build` button. This will create the installers in
+the *openrocket/install4j/media/* directory. Local macOS signing material goes in the git-ignored *openrocket/install4j/code_signing/*
+directory.
+
+The GitHub workflows build with the install4j version pinned in :file:`.github/actions/setup-install4j/action.yml`. When you
+upgrade install4j locally, update that version and its three download checksums as well, so that CI does not build the
+project with an older install4j than the one it was saved with.
+
+.. figure:: /img/dev_guide/building_releasing/install4j_build.png
+   :align: center
+   :width: 80%
+   :alt: Building the installers in install4j.
+
+   Building the installers in install4j.
+
+The current install4j project deliberately has Windows code signing disabled because SignPath signs Windows installers after
+the GitHub build. For local development builds, enable ``Disable code signing`` and ``Disable notarization`` in the
+install4j :menuselection:`Build` tab when the macOS credentials are unavailable.
+
+The Windows installers include the Explorer thumbnail handler from :file:`build/windows-shell-extension`. For a local
+Windows build, build `Windows-ork-Preview <https://github.com/openrocket/Windows-ork-Preview>`__ and copy
+``OrkThumbnailHandler.dll`` and ``SharpShell.dll`` into that directory first; otherwise install4j only warns and the
+installers are built without thumbnail previews.
+
+macOS QuickLook Extension
+-------------------------
+
+The macOS installers include a QuickLook extension that allows users to preview ``.ork`` files directly in Finder
+(via spacebar or the preview pane). install4j cannot build or sign this extension, so it is built and signed separately
+and merged into each macOS DMG afterwards.
+
+The source code of the extension is maintained in a separate repository:
+`openrocket/macOS-QuickLook-extension <https://github.com/openrocket/macOS-QuickLook-extension>`__.
+
+Building the macOS installers with GitHub Actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The **Build macOS installers** workflow (:file:`.github/workflows/build-macos.yml`) builds, signs, and notarizes both macOS
+DMGs (Apple Silicon and Intel), including the QuickLook extension. It builds the Java installers with install4j, builds the
+extension with Xcode, merges the two with :file:`.github/scripts/add-macos-quicklook.sh`, and then notarizes and staples
+the result. The finished DMGs are uploaded as the ``openrocket-macos-<run number>`` workflow artifact.
+
+Before the first run, configure the following in the GitHub repository (preferably on an environment named
+``macos-signing`` with required reviewers and a branch restriction):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Name
+     - Value
+   * - ``INSTALL4J_LICENSE_KEY`` *(secret)*
+     - The install4j license key (shared with the Windows workflow).
+   * - ``MACOS_CERTIFICATE_P12_BASE64`` *(secret)*
+     - The **Developer ID Application** certificate and private key as a base64-encoded ``.p12`` file
+       (``base64 -i OpenRocket_macOS.p12 | pbcopy``).
+   * - ``MACOS_CERTIFICATE_PASSWORD`` *(secret)*
+     - The password of that ``.p12`` file.
+   * - ``APPLE_API_KEY_P8`` *(secret)*
+     - The full contents of the App Store Connect API key (``AuthKey_<key id>.p8``) used for notarization.
+   * - ``APPLE_API_KEY_ID`` *(variable)*
+     - The key ID of that API key (the ``KEY_ID`` variable in the install4j project).
+   * - ``APPLE_API_ISSUER_ID`` *(variable)*
+     - The issuer ID of the App Store Connect team (the ``ISSUER_ID`` variable in the install4j project).
+
+To run it, open :menuselection:`GitHub --> Actions --> Build macOS installers`, select :guilabel:`Run workflow`, and select the
+release branch. The ``quicklook_ref`` input is the commit of the QuickLook extension repository to build; update its
+default whenever the extension changes, and always use a full commit SHA because this code runs with the signing
+certificate available.
+
+.. note::
+   The workflow runs on the ``macos-26`` image because the extension project targets the macOS 26 SDK.
+
+Building the macOS installers manually
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you cannot use GitHub Actions, build the DMGs with install4j as described above and follow the steps in the
+`extension repository README <https://github.com/openrocket/macOS-QuickLook-extension#readme>`__ to build, sign, notarize,
+and inject the extension using the ``runit`` script.
+
+.. note::
+   The QuickLook extension requires a **Developer ID Application** certificate and an **App-Specific Password**
+   (or App Store Connect API key) for notarization. See the extension README for the full setup guide, including Apple
+   Developer account configuration and Info.plist requirements.
+
+.. warning::
+   The install4j project must declare the ``info.openrocket.ork`` UTI (Uniform Type Identifier) in the macOS
+   launcher's file association settings. Without this, macOS will not associate ``.ork`` files with OpenRocket,
+   and the QuickLook extension will not activate. See the macOS-QuickLook-extension README for details.
+
+Release Procedure
+=================
+
+The release procedure for OpenRocket is as follows:
+
+1. Update the `ReleaseNotes.md <https://github.com/openrocket/openrocket/blob/unstable/ReleaseNotes.md>`__ with the changes that are part of the new release.
+   This includes new features, bug fixes, and other changes that are part of the release. Make sure to include the version number and the release date.
+   Take a look at the previous release notes to see how it should be formatted.
+
+2. Make sure the component database and the bundled motor database are up to date. Dependabot opens a monthly pull request
+   when the ``openrocket-database`` submodule has new commits, and the **Update bundled motor database** workflow opens a
+   monthly pull request when a newer motor database is published. Merge any open ones, or run the ``submoduleUpdate`` and
+   ``updateBundledMotorDatabase`` Gradle tasks yourself.
+
+3. Rerun all example design files (open the design and overwrite the files at :file:`core/src/main/resources/datafiles/examples`
+with the new results) to ensure that they are up-to-date with the latest changes.
+
+4. **Update the version number** in ``openrocket/core/src/main/resources/build.properties`` to the correct version number.
+
+   For official releases, the version number should use the format ``YY.MM`` (*year.month*). For example, if the software is released in
+   September 2023, the version number should be ``23.09``. If there are multiple releases in the same month, add an incremental number
+   to the version number, e.g. ``23.09.01``.
+
+   Development snapshot builds that are meant for Sonatype snapshot publishing should use the same base version with a Maven snapshot suffix, for example ``26.xx-SNAPSHOT``.
+
+   If a new release contains significant changes, it may be necessary to release alpha or beta versions first. In that case, the version
+   number should be appended with ``.alpha.`` or ``.beta.`` plus an incremental number. For example, if the software is in beta stage
+   in September 2023, the version number should be ``23.09.beta.01``. In general, alpha releases are not necessary. This is only for very rough releases.
+   Beta releases are only necessary if there are significant changes that need to be tested by the community before the final release.
+
+   One final option is to release a release candidate (RC) version. This is a version that is considered to be the final version,
+   but needs to be tested by the community before the final release. The version number should be appended with ``.RC.`` plus an incremental number.
+   For example, if the software is in RC stage in September 2023, the version number should be ``23.09.RC.01``.
+
+   The official release that comes after the beta release should have the same version number as the beta release, but without the ``.beta.`` part.
+   For instance, if the beta testing started in September 2023 with version number ``23.09.beta.01``, the final release should have version number ``23.09``,
+   even if the final release is in November 2023. This is to ensure consistency in the version numbering and to link the beta release(s) to the final release.
+
+5. **Build and verify the distribution JARs** using ``./gradlew dist distributionSmokeTest`` (see above).
+
+6. **Test the distribution JARs** on their matching OS and architecture. Run ``distributionSmokeTest`` on each supported
+   platform, then check that the application starts, 3D rendering and scripting work, and the new version number is applied
+   to the splash screen and under :menuselection:`Help --> About`.
+
+7. **Publish the Maven Central library artifacts**.
+
+   OpenRocket publishes ``info.openrocket:core`` from the Gradle ``:core`` module. Follow the process in :ref:`maven-central-publishing` to:
+
+   - run ``./gradlew :core:publishToMavenLocal``
+   - run ``./gradlew :core:publish``
+   - call the Sonatype manual upload endpoint to make the staged deployment appear in the Central Portal
+
+8. **Create the packaged installers** (see above).
+
+   .. warning::
+      Build the Windows installers with the ``Build and sign Windows installers`` GitHub Actions workflow. Download only its
+      ``openrocket-windows-signed-*`` artifact; never release the unsigned SignPath input artifact.
+
+      Build the Linux installers with the ``Build Linux installers`` GitHub Actions workflow.
+
+      When building the macOS installers in install4j, make sure macOS code signing and notarization are enabled.
+
+9. **Add the macOS QuickLook extension** to the macOS DMG installers.
+
+   Run the **Build macOS installers** GitHub workflow (see above). It builds both macOS DMGs and includes the
+   QuickLook extension, so no separate step is needed. If you build the DMGs locally instead, follow the instructions in the
+   `macOS-QuickLook-extension repository <https://github.com/openrocket/macOS-QuickLook-extension>`__ to build, sign,
+   notarize, and inject the QuickLook preview extension into each macOS DMG (Apple Silicon and Intel).
+
+10. **Test the installers** to ensure that they work correctly.
+
+11. **Prepare the website** *(for official releases only, not for alpha, beta, or release candidate releases)*.
+
+    The `source code for the website <https://github.com/openrocket/openrocket.github.io>`__ needs to be updated to point to the new release.
+    Follow these steps:
+
+    - Add the release to `downloads_config.json <https://github.com/openrocket/openrocket.github.io/blob/development/assets/downloads_config.json>`__.
+
+    - Keep a visible **Code signing policy** link on the downloads page. It may link to the policy in the main OpenRocket
+      repository README. This is required while using a SignPath Foundation certificate.
+    - Update the ``current_version`` in `_config <https://github.com/openrocket/openrocket.github.io/blob/development/_config.yml>`__.
+    - Add a new entry to `_whats_new <https://github.com/openrocket/openrocket.github.io/tree/development/_whats-new>`__ for the new release.
+      Create a ``wn-<version number>.md`` file with the changes that are part of the new release. Please take a close look to the previous entries to see how it should be formatted.
+    - Update the `release notes <https://github.com/openrocket/openrocket.github.io/blob/development/_includes/ReleaseNotes.md>`__
+      (which is a link to the What's new file that you just created). Again, take a close look at the previous entries to see how it should be formatted.
+
+    .. warning::
+       Make sure to **update the website on the** ``development`` **branch**. The ``master`` branch is the branch that is live
+       on the website. First update the ``development`` branch and test the changes on the website. In a later step, the
+       changes will be merged to the ``master`` branch.
+
+12. **Publish the release on GitHub**.
+
+    Go to the `releases page <https://github.com/openrocket/openrocket/releases>`__. Click *Draft a new release*.
+    Select *Choose a tag* and enter a new tag name, following the format ``release-<version number>``, e.g. ``release-23.09``.
+    The title should follow the format ``OpenRocket <version number> (<release date as YYYY-MM-DD>)``, e.g. ``OpenRocket 23.09 (2023-11-16)``.
+
+    Fill in the release text, following the `ReleaseNotes.md <https://github.com/openrocket/openrocket/blob/unstable/ReleaseNotes.md>`__.
+    If you want to credit the developers who contributed to the release, you can tag them anywhere in the release text using the `@username` syntax.
+    They will then be automatically displayed in the contributors list on the release page.
+
+    Finally, upload all the packaged installers and the universal ``OpenRocket-<version>.jar`` to the release. The platform
+    JARs are installer inputs. For Windows, use only the installers from the
+    successful ``openrocket-windows-signed-*`` workflow artifact. The source code (zip and tar.gz) is automatically appended
+    to each release, you do not need to upload it manually.
+
+    If this is an alpha, beta, or release candidate release, tick the *Set as a pre-release* checkbox.
+
+    Click *Publish release*.
+
+13. **Push the changes to the website**
+
+    First, build the ``development`` branch locally to verify that the changes that you made in step 9 are correct.
+    If everything is working (test the download links, the release notes, and the What's new page), create a new PR
+    that merges the changes from the ``development`` branch to the ``master`` branch.
+
+14. **Send out the release announcement**.
+
+    Send out the release announcement to the OpenRocket mailing list, the TRF forum, and the OpenRocket social media channels
+    (Discord, Facebook...).
+
+    The announcement should include the new features, bug fixes, and other changes that are part of the new release.
+    Make sure to include the download links to the new release. Here is an `example announcement <https://www.rocketryforum.com/threads/announcement-openrocket-23-09-is-now-available-for-download.183186/>`__.
+
+15. **Merge the** ``unstable`` **branch to the** ``master`` **branch**.
+
+    After the release is published, merge the changes from the `unstable <https://github.com/openrocket/openrocket>`__ branch
+    to the `master <https://github.com/openrocket/openrocket/tree/master>`__ branch.
+
+16. **Upload the new release to** `SourceForge <https://sourceforge.net/projects/openrocket/>`__.
+
+    The downloads page on SourceForge is still very actively used, so be sure to upload the new release there as well.
+
+17. **Update package managers** (e.g. snap, Chocolatey, Homebrew) with the new release.
+
+Snap
+====
+
+The OpenRocket snap package is automatically updated using the `Snapcraft <https://snapcraft.io/>`__ build system.
+However, the snap package's 'latest/stable' release needs to be manually updated after a new OpenRocket release is
+published.
+
+On a Linux system with snap installed, run the following command to build the new snap package:
+
+.. code-block:: bash
+
+      snapcraft remote-build
+
+This will create a file named ``openrocket_<version>_<arch>.snap`` in the current directory.
+Note that it may take up to 30 minutes for each architecture to be built.
+To publish the new snap package, run the following command (separate commands for each ``<arch>``):
+
+.. code-block:: bash
+
+      snapcraft upload --release=stable openrocket_<version>_<arch>.snap
+
+A similar procedure can be used to publish release candidates or beta versions by changing the ``--release`` option to
+``candidate`` or ``beta``.
+
+For developers with access to the OpenRocket Snapcraft account, more information can be found at the `snapcraft.io page <https://snapcraft.io/openrocket/releases>`__.
