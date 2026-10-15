@@ -81,10 +81,32 @@ npm install
 npm run dev -- --host 0.0.0.0 --port 8080
 ```
 
-To serve the static public folder directly:
+### GitHub Codespaces
+
+Run the Vite server from the `openrocket-cheerpj-swing-poc` directory:
 
 ```bash
-npx http-server public -p 8080
+npm install
+npm run dev -- --host 0.0.0.0 --port 8080
+```
+
+In the Codespaces **Ports** panel, find port `8080` and open it in the browser. Do not open
+`index.html` as a local file and do not use the `public/` directory as the document root.
+The browser page is served by Vite, while CheerpJ maps `/app/engine/openrocket-app.jar`
+to the `public/engine/openrocket-app.jar` asset.
+
+To verify the asset before launching:
+
+```bash
+curl -I http://127.0.0.1:8080/engine/openrocket-app.jar
+```
+
+The response must be `200 OK` and have `Content-Type: application/java-archive`.
+
+For a static server, use the project root rather than `public/`:
+
+```bash
+npx http-server . -p 8080
 ```
 
 Then browse to:

@@ -62,11 +62,15 @@
           await cheerpjInit();
           cheerpjCreateDisplay(1200, 800);
           status.textContent = 'Starting Swing runtime...';
-          await cheerpjRunJar('/app/engine/openrocket-app.jar');
+          const exitCode = await cheerpjRunJar('/app/engine/openrocket-app.jar');
+          if (exitCode !== 0) {
+            throw new Error(`OpenRocket exited with code ${exitCode}. Check the browser console for Java runtime errors.`);
+          }
           status.textContent = 'Launch finished';
         } catch (error) {
           console.error('CheerpJ launch failed', error);
-          document.querySelector('#status').textContent = 'Launch failed. See console for details.';
+          const message = error instanceof Error ? error.stack ?? error.message : String(error);
+          document.querySelector('#status').textContent = `Launch failed: ${message}`;
         }
       }
       launch();

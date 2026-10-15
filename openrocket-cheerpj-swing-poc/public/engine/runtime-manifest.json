@@ -13,12 +13,11 @@
     "launchStrategy": "cheerpjRunJar / cheerpjRunMain",
     "jar": "/app/engine/openrocket-app.jar",
     "classPath": [
-      "/app/engine/openrocket-core.jar",
-      "/app/engine/openrocket-app.jar",
-      "/app/engine/dependencies/"
+      "/app/engine/openrocket-app.jar"
     ],
     "notes": [
-      "The actual OpenRocket JAR and dependency list must be verified from the upstream build output.",
+      "The OpenRocket application is distributed as a self-contained fat JAR.",
+      "openrocket-core.jar is intentionally not required.",
       "This file is a scaffold placeholder and not a production runtime manifest."
     ]
   },
