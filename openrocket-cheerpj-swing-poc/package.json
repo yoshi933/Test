@@ -10,7 +10,7 @@
     "serve:public": "npx http-server public -p 8080"
   },
   "devDependencies": {
-    "http-server": "^14.2.1",
+    "http-server": "^14.1.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   }
