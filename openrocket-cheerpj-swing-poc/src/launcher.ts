@@ -6,6 +6,7 @@ export type LauncherOptions = {
     addLog: (entry: string) => void;
     getTimeline: () => Array<{ label: string; time: number }>;
   };
+  log?: (entry: string) => void;
 };
 
 export type LaunchResult = {
@@ -15,7 +16,7 @@ export type LaunchResult = {
 
 type CheerpJWindow = typeof window & {
   cheerpjInit?: () => Promise<void>;
-  cheerpjCreateDisplay?: (width: number, height: number) => void;
+  cheerpjCreateDisplay?: (width: number, height: number, parent?: HTMLElement) => HTMLElement;
   cheerpjRunJar?: (path: string) => Promise<number>;
 };
 
@@ -44,6 +45,10 @@ export function createLauncher(options: LauncherOptions) {
     async launch(): Promise<LaunchResult> {
       const { statusElement, displayElement, diagnostics } = options;
       const cheerpj = window as CheerpJWindow;
+      const log = (entry: string) => {
+        diagnostics.addLog(entry);
+        options.log?.(entry);
+      };
 
       try {
         diagnostics.mark('cheerpj-init');
@@ -54,27 +59,41 @@ export function createLauncher(options: LauncherOptions) {
         }
 
         await cheerpj.cheerpjInit();
-        diagnostics.addLog('CheerpJ initialized');
+        log('CheerpJ initialized');
 
         diagnostics.mark('cheerpj-display');
-        statusElement.textContent = 'Creating Swing display...';
-        cheerpj.cheerpjCreateDisplay?.(1200, 800);
+        statusElement.textContent = 'Creating OpenRocket window...';
+        if (!cheerpj.cheerpjCreateDisplay) {
+          throw new Error('cheerpjCreateDisplay is unavailable in this CheerpJ version.');
+        }
+        cheerpj.cheerpjCreateDisplay(-1, -1, displayElement);
         displayElement.setAttribute('data-ready', 'true');
 
         diagnostics.mark('java-launch');
-        statusElement.textContent = 'Launching sample Java app...';
+        statusElement.textContent = 'Launching OpenRocket...';
 
         if (!cheerpj.cheerpjRunJar) {
           throw new Error('cheerpjRunJar is unavailable in this CheerpJ version.');
         }
 
-        const exitCode = await cheerpj.cheerpjRunJar('/app/engine/openrocket-app.jar');
-        diagnostics.addLog(`Java app exited with code ${exitCode}`);
-        if (exitCode !== 0) {
-          throw new Error(`OpenRocket exited with code ${exitCode}. Check the browser console for Java runtime errors.`);
-        }
+        statusElement.textContent = '';
+        void cheerpj.cheerpjRunJar('/app/engine/openrocket-app.jar').then((exitCode) => {
+          log(`Java app exited with code ${exitCode}`);
+          if (exitCode !== 0) {
+            const message = `OpenRocket exited with code ${exitCode}. Check the Console for Java runtime errors.`;
+            console.error(message);
+            statusElement.textContent = message;
+          } else {
+            statusElement.textContent = 'OpenRocket has exited.';
+          }
+        }).catch((error: unknown) => {
+          const message = describeError(error);
+          console.error('CheerpJ OpenRocket launch failed', error);
+          log(`Launch failed: ${message}`);
+          statusElement.textContent = `Launch failed: ${message}`;
+        });
 
-        statusElement.textContent = 'Launch finished. Confirm runtime behavior in the browser console.';
+        log('OpenRocket launch requested');
         return { ok: true, message: 'Launch process completed without a fatal client-side error.' };
       } catch (error) {
         const message = describeError(error);

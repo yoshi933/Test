@@ -1,6 +1,6 @@
 import './styles.css';
-import { createLauncher, type LaunchResult } from './launcher';
-import { buildDiagnosticsSession, logRuntimeSummary } from './diagnostics';
+import { createLauncher } from './launcher';
+import { buildDiagnosticsSession } from './diagnostics';
 
 const app = document.getElementById('app');
 
@@ -8,86 +8,67 @@ if (!app) {
   throw new Error('App root is missing.');
 }
 
-const diagnostics = buildDiagnosticsSession();
+const consoleEntries: string[] = [];
 
-diagnostics.mark('page-load');
 app.innerHTML = `
-  <div class="page-shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">OpenRocket + CheerpJ</p>
-        <h1>Swing compatibility prototype</h1>
-      </div>
-      <button id="launch-button" type="button">Launch Swing test</button>
-    </header>
-    <main class="content-grid">
-      <section class="panel overview-panel">
-        <h2>Research status</h2>
-        <p class="muted">
-          This scaffold verifies that the runtime can initialize, load the browser bridge, and prepare the path toward launching the actual OpenRocket Swing app.
-        </p>
-        <ul class="status-list">
-          <li>CheerpJ loader script loaded</li>
-          <li>Browser document initialized</li>
-          <li>Runtime manifest ready</li>
-          <li>Launch path prepared</li>
-        </ul>
-        <div class="meta-box">
-          <strong>Target runtime:</strong>
-          <span>CheerpJ 4.3</span>
-        </div>
-      </section>
-
-      <section class="panel launcher-panel">
-        <h2>Launcher</h2>
-        <div id="status" aria-live="polite">Waiting for launch...</div>
-        <div class="actions">
-          <button id="launch-button-secondary" type="button" class="secondary">Run sample launch</button>
-        </div>
-        <div id="cheerpj-display" class="display-slot"></div>
-      </section>
-    </main>
-    <section class="panel log-panel">
-      <h2>Diagnostics</h2>
-      <pre id="diagnostics-output"></pre>
+  <main class="openrocket-window" aria-label="OpenRocket">
+    <div id="cheerpj-display"></div>
+    <div id="status" role="status" aria-live="polite">Starting OpenRocket...</div>
+    <section id="runtime-console" aria-label="Runtime console" hidden>
+      <header>
+        <strong>OpenRocket Console</strong>
+        <button id="clear-console" type="button">Clear</button>
+      </header>
+      <pre id="console-output"></pre>
     </section>
-  </div>
+  </main>
 `;
 
-const statusEl = document.getElementById('status');
-const displayEl = document.getElementById('cheerpj-display');
-const logEl = document.getElementById('diagnostics-output');
+const statusElement = document.getElementById('status');
+const displayElement = document.getElementById('cheerpj-display');
+const runtimeConsole = document.getElementById('runtime-console');
+const consoleOutput = document.getElementById('console-output');
+const clearConsole = document.getElementById('clear-console');
 
-if (!statusEl || !displayEl || !logEl) {
-  throw new Error('Required diagnostics nodes are missing.');
+if (!statusElement || !displayElement || !runtimeConsole || !consoleOutput || !clearConsole) {
+  throw new Error('Required OpenRocket display nodes are missing.');
 }
 
-const launchHandler = async (): Promise<LaunchResult> => {
-  const launcher = createLauncher({
-    statusElement: statusEl,
-    displayElement: displayEl,
-    diagnostics,
-  });
-
-  const result = await launcher.launch();
-  const text = logRuntimeSummary(diagnostics);
-  logEl.textContent = text;
-  return result;
+const appendConsole = (entry: string) => {
+  consoleEntries.push(`[${new Date().toLocaleTimeString()}] ${entry}`);
+  consoleOutput.textContent = consoleEntries.join('\n');
+  consoleOutput.scrollTop = consoleOutput.scrollHeight;
 };
 
-const launchButton = document.getElementById('launch-button');
-const secondaryButton = document.getElementById('launch-button-secondary');
+const toggleConsole = () => {
+  runtimeConsole.hidden = !runtimeConsole.hidden;
+};
 
-if (launchButton) {
-  launchButton.addEventListener('click', () => {
-    void launchHandler();
-  });
-}
+window.addEventListener('keydown', (event) => {
+  if (event.altKey && event.shiftKey && event.code === 'KeyC') {
+    event.preventDefault();
+    toggleConsole();
+  }
+});
 
-if (secondaryButton) {
-  secondaryButton.addEventListener('click', () => {
-    void launchHandler();
-  });
-}
+clearConsole.addEventListener('click', () => {
+  consoleEntries.length = 0;
+  consoleOutput.textContent = '';
+});
 
-logEl.textContent = logRuntimeSummary(diagnostics);
+window.addEventListener('error', (event) => {
+  appendConsole(`ERROR: ${event.message} (${event.filename}:${event.lineno})`);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  appendConsole(`UNHANDLED REJECTION: ${String(event.reason)}`);
+});
+
+const launcher = createLauncher({
+  statusElement,
+  displayElement,
+  diagnostics: buildDiagnosticsSession(),
+  log: appendConsole,
+});
+
+void launcher.launch();
