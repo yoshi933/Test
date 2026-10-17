@@ -19,7 +19,13 @@
         try {
           const status = document.querySelector('#status');
           status.textContent = 'Initializing CheerpJ...';
+<<<<<<< HEAD
           await cheerpjInit({ version: 11, status: 'none' });
+=======
+          await cheerpjInit({
+              version: 11
+          });
+>>>>>>> 131275f8ef9d3fa61a14b66e53ff5e7685c781c0
           cheerpjCreateDisplay(1200, 800);
           status.textContent = 'Starting Swing runtime...';
           const exitCode = await cheerpjRunJar('/app/engine/openrocket-app.jar');
