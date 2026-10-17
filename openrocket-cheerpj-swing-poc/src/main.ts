@@ -40,6 +40,9 @@ const appendConsole = (entry: string) => {
   consoleOutput.scrollTop = consoleOutput.scrollHeight;
 };
 
+appendConsole(`Page loaded: ${location.href}`);
+appendConsole(`Viewport: ${window.innerWidth}x${window.innerHeight}`);
+
 const toggleConsole = () => {
   runtimeConsole.hidden = !runtimeConsole.hidden;
 };

@@ -1,0 +1,4 @@
+body { font-family: system-ui, sans-serif; padding: 24px; }
+.container { max-width: 900px; margin: 0 auto; }
+button { padding: 8px 12px; font-size: 16px; }
+pre { background: #111; color: #eee; padding: 12px; white-space: pre-wrap; }

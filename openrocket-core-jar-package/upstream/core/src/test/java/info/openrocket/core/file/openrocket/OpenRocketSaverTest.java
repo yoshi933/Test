@@ -1,0 +1,953 @@
+package info.openrocket.core.file.openrocket;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import java.io.File;
+import java.io.FileFilter;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+import info.openrocket.core.ServicesForTesting;
+import info.openrocket.core.database.ComponentPresetDao;
+import info.openrocket.core.database.ComponentPresetDatabase;
+import info.openrocket.core.database.motor.MotorDatabase;
+import info.openrocket.core.database.motor.ThrustCurveMotorSetDatabase;
+import info.openrocket.core.appearance.Appearance;
+import info.openrocket.core.document.OpenRocketDocument;
+import info.openrocket.core.document.OpenRocketDocumentFactory;
+import info.openrocket.core.document.PlotAppearance;
+import info.openrocket.core.document.Simulation;
+import info.openrocket.core.simulation.FlightData;
+import info.openrocket.core.simulation.FlightDataBranch;
+import info.openrocket.core.simulation.FlightDataType;
+import info.openrocket.core.simulation.SimulationOptions;
+import info.openrocket.core.simulation.montecarlo.MonteCarloDistribution;
+import info.openrocket.core.simulation.montecarlo.MonteCarloParameter;
+import info.openrocket.core.simulation.montecarlo.MonteCarloSettings;
+import info.openrocket.core.document.StorageOptions;
+import info.openrocket.core.file.GeneralRocketLoader;
+import info.openrocket.core.file.GeneralRocketSaver;
+import info.openrocket.core.file.RocketLoadException;
+import info.openrocket.core.file.motor.GeneralMotorLoader;
+import info.openrocket.core.l10n.DebugTranslator;
+import info.openrocket.core.l10n.Translator;
+import info.openrocket.core.logging.ErrorSet;
+import info.openrocket.core.logging.WarningSet;
+import info.openrocket.core.motor.Manufacturer;
+import info.openrocket.core.motor.Motor;
+import info.openrocket.core.motor.MotorConfiguration;
+import info.openrocket.core.motor.MotorDigest;
+import info.openrocket.core.motor.ThrustCurveMotor;
+import info.openrocket.core.plugin.PluginModule;
+import info.openrocket.core.rocketcomponent.AxialStage;
+import info.openrocket.core.rocketcomponent.BodyTube;
+import info.openrocket.core.rocketcomponent.FlightConfiguration;
+import info.openrocket.core.rocketcomponent.FlightConfigurationId;
+import info.openrocket.core.rocketcomponent.InnerTube;
+import info.openrocket.core.rocketcomponent.MotorMount;
+import info.openrocket.core.rocketcomponent.Rocket;
+import info.openrocket.core.rocketcomponent.RocketComponent;
+import info.openrocket.core.simulation.extension.impl.ScriptingExtension;
+import info.openrocket.core.simulation.extension.impl.ScriptingUtil;
+import info.openrocket.core.startup.Application;
+import info.openrocket.core.util.Coordinate;
+import info.openrocket.core.util.CoordinateIF;
+import info.openrocket.core.util.LineStyle;
+import info.openrocket.core.util.ORColor;
+import info.openrocket.core.util.TestRockets;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import com.google.inject.AbstractModule;
+import com.google.inject.Guice;
+import com.google.inject.Injector;
+import com.google.inject.Module;
+import com.google.inject.Provider;
+import com.google.inject.util.Modules;
+
+public class OpenRocketSaverTest {
+	
+	private final OpenRocketSaver saver = new OpenRocketSaver();
+	private static final File TMP_DIR = new File("./tmp/");
+	
+	public static final String SIMULATION_EXTENSION_SCRIPT = "// Test <  &\n// >\n// <![CDATA[";
+	
+	private static Injector injector;
+
+	@BeforeAll
+	public static void setup() {
+		Module applicationModule = new ServicesForTesting();
+		Module pluginModule = new PluginModule();
+		
+		Module dbOverrides = new AbstractModule() {
+			@Override
+			protected void configure() {
+				bind(ComponentPresetDao.class).toProvider(new EmptyComponentDbProvider());
+				bind(MotorDatabase.class).toProvider(new MotorDbProvider());
+				bind(Translator.class).toInstance(new DebugTranslator(null));
+			}
+		};
+		
+		injector = Guice.createInjector(Modules.override(applicationModule).with(dbOverrides), pluginModule);
+		Application.setInjector(injector);
+
+		if (!(TMP_DIR.exists() && TMP_DIR.isDirectory())) {
+			boolean success = TMP_DIR.mkdirs();
+			if (!success) {
+				fail("Unable to create core/tmp dir needed for tests.");
+			}
+		}
+	}
+
+	@AfterEach
+	public void deleteRocketFilesFromTemp() {
+		final String fileNameMatchStr = String.format("%s_.*\\.ork", this.getClass().getName());
+		
+		File[] toBeDeleted = TMP_DIR.listFiles(new FileFilter() {
+			@Override
+			public boolean accept(File theFile) {
+				if (theFile.isFile()) {
+					return theFile.getName().matches(fileNameMatchStr);
+				}
+				return false;
+			}
+		});
+		
+		for (File deletableFile : toBeDeleted) {
+			deletableFile.delete();
+		}
+	}
+	
+	/**
+	 * Test for creating, saving, and loading various rockets with different file versions
+	 * 
+	 * TODO: add a deep equality check to ensure no changes after save/read
+	 */
+	
+	@Test
+	public void testCreateLoadSave() {
+		
+		// Create rockets
+		ArrayList<OpenRocketDocument> rocketDocs = new ArrayList<>();
+		rocketDocs.add(TestRockets.makeTestRocket_v100());
+		rocketDocs.add(TestRockets.makeTestRocket_v101_withFinTabs());
+		rocketDocs.add(TestRockets.makeTestRocket_v101_withTubeCouplerChild());
+		// no version 1.2 file type exists
+		// no version 1.3 file type exists
+		rocketDocs.add(TestRockets.makeTestRocket_v104_withSimulationData());
+		rocketDocs.add(TestRockets.makeTestRocket_v104_withMotor());
+		rocketDocs.add(TestRockets.makeTestRocket_v105_withComponentPreset());
+		rocketDocs.add(TestRockets.makeTestRocket_v105_withCustomExpression());
+		rocketDocs.add(TestRockets.makeTestRocket_v105_withLowerStageRecoveryDevice());
+		rocketDocs.add(TestRockets.makeTestRocket_v106_withAppearance());
+		rocketDocs.add(TestRockets.makeTestRocket_v106_withMotorMountIgnitionConfig());
+		rocketDocs.add(TestRockets.makeTestRocket_v106_withRecoveryDeviceDeploymentConfig());
+		rocketDocs.add(TestRockets.makeTestRocket_v106_withStageSeparationConfig());
+		rocketDocs.add(TestRockets.makeTestRocket_v110_withSimulationExtension(SIMULATION_EXTENSION_SCRIPT));
+        rocketDocs.add(TestRockets.makeTestRocket_v108_withBoosters());
+		rocketDocs.add(TestRockets.makeTestRocket_v108_withDisabledStage());
+		rocketDocs.add(TestRockets.makeTestRocket_for_estimateFileSize());
+		
+		StorageOptions options = new StorageOptions();
+		options.setSaveSimulationData(true);
+		
+		// Save rockets, load, validate
+		for (OpenRocketDocument rocketDoc : rocketDocs) {
+			File file = saveRocket(rocketDoc, options);
+			OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+			assertNotNull(rocketDocLoaded);
+		}
+	}
+
+	@Test
+	public void testSaveStageActiveness() {
+		OpenRocketDocument rocketDoc = TestRockets.makeTestRocket_v108_withDisabledStage();
+		StorageOptions options = new StorageOptions();
+		options.setSaveSimulationData(true);
+
+		// Save rockets, load, validate
+		File file = saveRocket(rocketDoc, options);
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+
+		// Check that the stages activeness is saved
+		FlightConfiguration config = rocketDocLoaded.getRocket().getSelectedConfiguration();
+		assertFalse(config.isStageActive(0), " selected config, stage 0 should have been disabled after saving");
+		assertTrue(config.isStageActive(1), " selected config, stage 1 should have been enabled after saving");
+		assertTrue(config.isStageActive(2), " selected config, stage 2 should have been enabled after saving");
+
+		// Disable second stage
+		config._setStageActive(1, false, false);
+		file = saveRocket(rocketDocLoaded, options);
+		rocketDocLoaded = loadRocket(file.getPath());
+		config = rocketDocLoaded.getRocket().getSelectedConfiguration();
+		assertFalse(config.isStageActive(0), " selected config, stage 0 should have been disabled after saving");
+		assertFalse(config.isStageActive(1), " selected config, stage 1 should have been disabled after saving");
+		assertTrue(config.isStageActive(2), " selected config, stage 2 should have been enabled after saving");
+
+		// Re-enable first stage
+		config._setStageActive(0, true, false);
+		file = saveRocket(rocketDocLoaded, options);
+		rocketDocLoaded = loadRocket(file.getPath());
+		config = rocketDocLoaded.getRocket().getSelectedConfiguration();
+		assertTrue(config.isStageActive(0), " selected config, stage 0 should have been enabled after saving");
+		assertFalse(config.isStageActive(1), " selected config, stage 1 should have been disabled after saving");
+		assertTrue(config.isStageActive(2), " selected config, stage 2 should have been enabled after saving");
+
+		// Check that other configurations are not affected
+		FlightConfiguration extraConfig = rocketDocLoaded.getRocket()
+				.createFlightConfiguration(TestRockets.TEST_FCID_0);
+		extraConfig.setAllStages();
+		file = saveRocket(rocketDocLoaded, options);
+		rocketDocLoaded = loadRocket(file.getPath());
+		config = rocketDocLoaded.getRocket().getSelectedConfiguration();
+		extraConfig = rocketDocLoaded.getRocket().getFlightConfiguration(TestRockets.TEST_FCID_0);
+		assertTrue(config.isStageActive(0), " selected config, stage 0 should have been enabled after saving");
+		assertFalse(config.isStageActive(1), " selected config, stage 1 should have been disabled after saving");
+		assertTrue(config.isStageActive(2), " selected config, stage 2 should have been enabled after saving");
+		assertTrue(extraConfig.isStageActive(0), " extra config, stage 0 should have been enabled after saving");
+		assertTrue(extraConfig.isStageActive(1), " extra config, stage 1 should have been enabled after saving");
+		assertTrue(extraConfig.isStageActive(2), " extra config, stage 2 should have been enabled after saving");
+
+		// Disable a stage in the extra config, and an extra one in the selected config
+		extraConfig._setStageActive(0, false, false);
+		config._setStageActive(2, false, false);
+		file = saveRocket(rocketDocLoaded, options);
+		rocketDocLoaded = loadRocket(file.getPath());
+		config = rocketDocLoaded.getRocket().getSelectedConfiguration();
+		extraConfig = rocketDocLoaded.getRocket().getFlightConfiguration(TestRockets.TEST_FCID_0);
+		assertTrue(config.isStageActive(0), " selected config, stage 0 should have been enabled after saving");
+		assertFalse(config.isStageActive(1), " selected config, stage 1 should have been disabled after saving");
+		assertFalse(config.isStageActive(2), " selected config, stage 2 should have been disabled after saving");
+		assertFalse(extraConfig.isStageActive(0), " extra config, stage 0 should have been disabled after saving");
+		assertTrue(extraConfig.isStageActive(1), " extra config, stage 1 should have been enabled after saving");
+		assertTrue(extraConfig.isStageActive(2), " extra config, stage 2 should have been enabled after saving");
+
+		// Test an empty rocket with no configurations
+		OpenRocketDocument document = OpenRocketDocumentFactory.createNewRocket();
+		file = saveRocket(document, options);
+		rocketDocLoaded = loadRocket(file.getPath());
+		rocketDocLoaded.getRocket().getStage(0).addChild(new BodyTube()); // Add a child, otherwise the stage is always
+																			// marked inactive
+		config = rocketDocLoaded.getRocket().getSelectedConfiguration();
+		assertTrue(config.isStageActive(0), " empty rocket, selected config, stage 0 should have been enabled after saving");
+	}
+
+	@Test
+	public void testAppearanceTextureOpacityRoundTrip() {
+		OpenRocketDocument rocketDoc = TestRockets.makeTestRocket_v106_withAppearance();
+		BodyTube bodyTube = (BodyTube) rocketDoc.getRocket().getStage(0).getChild(0);
+		bodyTube.setAppearance(new Appearance(new ORColor(100, 25, 50, 128), 1, null, true));
+
+		File file = saveRocket(rocketDoc, new StorageOptions());
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+		BodyTube loadedBodyTube = (BodyTube) rocketDocLoaded.getRocket().getStage(0).getChild(0);
+		Appearance loadedAppearance = loadedBodyTube.getAppearance();
+
+		assertNotNull(loadedAppearance);
+		assertEquals(128, loadedAppearance.getPaint().getAlpha());
+		assertTrue(loadedAppearance.isOpacityAffectsTexture());
+	}
+
+	@Test
+	public void testUntrustedScriptDisabledOnLoad() {
+		OpenRocketDocument rocketDoc = TestRockets.makeTestRocket_v110_withSimulationExtension(SIMULATION_EXTENSION_SCRIPT);
+		StorageOptions options = new StorageOptions();
+		File file = saveRocket(rocketDoc, options);
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+		assertEquals(1, rocketDocLoaded.getSimulations().size());
+		assertEquals(1, rocketDocLoaded.getSimulations().get(0).getSimulationExtensions().size());
+		ScriptingExtension ext = (ScriptingExtension) rocketDocLoaded.getSimulations().get(0).getSimulationExtensions().get(0);
+		assertEquals(false, ext.isEnabled());
+		assertEquals(SIMULATION_EXTENSION_SCRIPT, ext.getScript());
+	}
+	
+	
+	@Test
+	public void testTrustedScriptEnabledOnLoad() {
+		OpenRocketDocument rocketDoc = TestRockets.makeTestRocket_v110_withSimulationExtension("TESTING");
+		injector.getInstance(ScriptingUtil.class).setTrustedScript("JavaScript", "TESTING", true);
+		StorageOptions options = new StorageOptions();
+		File file = saveRocket(rocketDoc, options);
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+		assertEquals(1, rocketDocLoaded.getSimulations().size());
+		assertEquals(1, rocketDocLoaded.getSimulations().get(0).getSimulationExtensions().size());
+		ScriptingExtension ext = (ScriptingExtension) rocketDocLoaded.getSimulations().get(0).getSimulationExtensions().get(0);
+		assertEquals(true, ext.isEnabled());
+		assertEquals(ext.getScript(), "TESTING");
+	}
+	
+	
+	/*
+	 * Test how accurate estimatedFileSize is.
+	 * 
+	 * Actual file is 5822 Bytes
+	 * Estimated file is 440 Bytes (yeah....)
+	 */
+	@Test
+	public void testEstimateFileSize() {
+		OpenRocketDocument rocketDoc = TestRockets.makeTestRocket_v104_withSimulationData();
+		
+		StorageOptions options = new StorageOptions();
+		options.setSaveSimulationData(true);
+		
+		long estimatedSize = saver.estimateFileSize(rocketDoc, options);
+		
+		// TODO: fix estimateFileSize so that it's a lot more accurate
+	}
+
+	/**
+	 * Test sim status with/without sim data in file.
+	 */
+	@Test
+	public void TestSimStatus() {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+		
+		// Hook up some simulations.
+		// First sim will not have options set
+		Simulation sim1 = new Simulation(rocket);
+		rocketDoc.addSimulation(sim1);
+
+		// Second sim has options, but hasn't been simulated
+		Simulation sim2 = new Simulation(rocket);
+		sim2.getOptions().setISAAtmosphere(true);
+		sim2.getOptions().setTimeStep(0.05);
+		sim2.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		rocketDoc.addSimulation(sim2);
+
+		// Third sim has been executed
+		Simulation sim3 = new Simulation(rocket);
+		sim3.getOptions().setISAAtmosphere(true);
+		sim3.getOptions().setTimeStep(0.05);
+		sim3.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		try {
+			sim3.simulate();
+		} catch (Exception e) {
+			fail(e.toString());
+		}
+		rocketDoc.addSimulation(sim3);
+
+		// Fourth sim has been executed, then configuration changed
+		Simulation sim4 = new Simulation(rocket);
+		sim4.getOptions().setISAAtmosphere(true);
+		sim4.getOptions().setTimeStep(0.05);
+		sim4.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		try {
+			sim4.simulate();
+		} catch (Exception e) {
+			fail(e.toString());
+		}
+		sim4.getOptions().setTimeStep(0.1);
+		rocketDoc.addSimulation(sim4);
+
+		// save, then load document
+		StorageOptions options = new StorageOptions();
+		options.setSaveSimulationData(true);
+
+		File file = saveRocket(rocketDoc, options);
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+		
+		assertEquals(Simulation.Status.CANT_RUN, rocketDocLoaded.getSimulations().get(0).getStatus());
+		assertEquals(Simulation.Status.NOT_SIMULATED, rocketDocLoaded.getSimulations().get(1).getStatus());
+		assertEquals(Simulation.Status.LOADED, rocketDocLoaded.getSimulations().get(2).getStatus());
+		assertEquals(Simulation.Status.OUTDATED, rocketDocLoaded.getSimulations().get(3).getStatus());
+	}
+
+	@Test
+	public void testAtmosphereHumiditySavedAndLoaded() {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+
+		Simulation sim = new Simulation(rocket);
+		sim.getOptions().setISAAtmosphere(false);
+		sim.getOptions().setLaunchTemperature(280.0);
+		sim.getOptions().setLaunchPressure(95000.0);
+		sim.getOptions().setLaunchRelativeHumidity(0.55);
+		sim.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		rocketDoc.addSimulation(sim);
+
+		File file = saveRocket(rocketDoc, new StorageOptions());
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+
+		assertEquals(1, rocketDocLoaded.getSimulations().size());
+		Simulation loadedSim = rocketDocLoaded.getSimulations().get(0);
+		assertFalse(loadedSim.getOptions().isISAAtmosphere());
+		assertEquals(0.55, loadedSim.getOptions().getLaunchRelativeHumidity(), 1e-12);
+		assertEquals(280.0, loadedSim.getOptions().getLaunchTemperature(), 1e-12);
+		assertEquals(95000.0, loadedSim.getOptions().getLaunchPressure(), 1e-9);
+	}
+
+	@Test
+	public void testFixedRandomSeedSavedAndLoaded() {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+
+		Simulation fixedSeedSimulation = new Simulation(rocket);
+		fixedSeedSimulation.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		fixedSeedSimulation.getOptions().setRandomSeed(-123456789);
+		fixedSeedSimulation.getOptions().setRandomSeedFixed(true);
+		rocketDoc.addSimulation(fixedSeedSimulation);
+
+		Simulation randomSeedSimulation = new Simulation(rocket);
+		randomSeedSimulation.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		randomSeedSimulation.getOptions().setRandomSeed(987654321);
+		rocketDoc.addSimulation(randomSeedSimulation);
+
+		File file = saveRocket(rocketDoc, new StorageOptions());
+		OpenRocketDocument loadedDocument = loadRocket(file.getPath());
+
+		Simulation loadedFixedSeedSimulation = loadedDocument.getSimulations().get(0);
+		assertTrue(loadedFixedSeedSimulation.getOptions().isRandomSeedFixed());
+		assertEquals(-123456789, loadedFixedSeedSimulation.getOptions().getRandomSeed());
+
+		Simulation loadedRandomSeedSimulation = loadedDocument.getSimulations().get(1);
+		assertFalse(loadedRandomSeedSimulation.getOptions().isRandomSeedFixed());
+	}
+	
+	////////////////////////////////
+	// Tests for File Version 1.11 //
+	////////////////////////////////
+	
+	@Test
+	public void testFileVersion111_withSimulationExtension() {
+		OpenRocketDocument rocketDoc = TestRockets.makeTestRocket_v110_withSimulationExtension(SIMULATION_EXTENSION_SCRIPT);
+		assertEquals(111, getCalculatedFileVersion(rocketDoc));
+	}
+
+	@Test
+	public void testMotorConfigurationNozzleExitDiameter() {
+		InnerTube mount = new InnerTube();
+		FlightConfigurationId fcid = new FlightConfigurationId();
+		MotorConfiguration configuration = new MotorConfiguration(mount, fcid);
+		ThrustCurveMotor motor = createEmbeddedTestMotor("");
+
+		assertEquals(0.0, configuration.getNozzleExitDiameter());
+		configuration.setMotor(motor);
+		configuration.setNozzleExitDiameter(0.006);
+		assertEquals(0.006, configuration.getNozzleExitDiameter());
+		assertEquals(0.006, configuration.clone().getNozzleExitDiameter());
+		assertEquals(0.006, configuration.copy(new FlightConfigurationId()).getNozzleExitDiameter());
+		assertThrows(IllegalArgumentException.class, () -> configuration.setNozzleExitDiameter(-0.001));
+		assertThrows(IllegalArgumentException.class,
+				() -> configuration.setNozzleExitDiameter(motor.getDiameter() + 0.001));
+
+		configuration.setMotor(createEmbeddedTestMotor("replacement"));
+		assertEquals(0.0, configuration.getNozzleExitDiameter(),
+				"Selecting another motor must clear nozzle geometry from the previous motor");
+	}
+
+	@Test
+	public void testLandingDispersionSettingsRemainAbsentUntilConfigured() throws IOException {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument document = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+		Simulation simulation = new Simulation(rocket);
+		simulation.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		document.addSimulation(simulation);
+
+		assertNull(simulation.getLandingDispersionSettings());
+		assertEquals(111, getCalculatedFileVersion(document));
+
+		File file = saveRocket(document, new StorageOptions());
+		assertFalse(Files.readString(file.toPath()).contains("<landingdispersion"));
+		assertNull(loadRocket(file.getPath()).getSimulations().get(0).getLandingDispersionSettings());
+	}
+
+	@Test
+	public void testLandingDispersionSettingsSavedAndLoaded() throws IOException {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument document = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+		Simulation simulation = new Simulation(rocket);
+		simulation.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		MonteCarloSettings settings = MonteCarloSettings.builder()
+				.runCount(750)
+				.seed(-123456789)
+				.threadCount(3)
+				.uncertainty(MonteCarloParameter.WIND_SPEED, MonteCarloDistribution.UNIFORM, 1.25)
+				.uncertainty(MonteCarloParameter.AIR_DENSITY, MonteCarloDistribution.LOG_NORMAL, 0.015)
+				.uncertainty(MonteCarloParameter.LAUNCH_GUIDE_DIRECTION,
+						MonteCarloDistribution.NORMAL, Math.toRadians(4.5))
+				.build();
+		simulation.setLandingDispersionSettings(settings);
+		document.addSimulation(simulation);
+
+		assertEquals(111, getCalculatedFileVersion(document));
+		File file = saveRocket(document, new StorageOptions());
+		String xml = Files.readString(file.toPath());
+		assertTrue(xml.contains("<openrocket version=\"1.11\""));
+		assertTrue(xml.contains("<landingdispersion runs=\"750\" seed=\"-123456789\">"));
+		assertTrue(xml.contains("parameter=\"airdensity\" distribution=\"lognormal\""));
+
+		MonteCarloSettings loaded = loadRocket(file.getPath()).getSimulations().get(0)
+				.getLandingDispersionSettings();
+		assertNotNull(loaded);
+		assertEquals(settings.getRunCount(), loaded.getRunCount());
+		assertEquals(settings.getSeed(), loaded.getSeed());
+		assertEquals(settings.getUncertainties(), loaded.getUncertainties());
+	}
+
+	@Test
+	public void testCustomMotorEmbeddedAsRseInOrk() throws IOException {
+		Rocket rocket = new Rocket();
+		rocket.setName("embedded_motor_test");
+
+		AxialStage stage = new AxialStage();
+		stage.setName("Stage1");
+		rocket.addChild(stage);
+
+		BodyTube bodyTube = new BodyTube(12, 1, 0.05);
+		stage.addChild(bodyTube);
+
+		InnerTube innerTube = new InnerTube();
+		bodyTube.addChild(innerTube);
+
+		FlightConfigurationId fcid = new FlightConfigurationId();
+		rocket.createFlightConfiguration(fcid);
+		rocket.setSelectedConfiguration(fcid);
+
+		ThrustCurveMotor prototype = createEmbeddedTestMotor("");
+		String motorDigest = createRaspStyleDigest(prototype);
+		ThrustCurveMotor motor = createEmbeddedTestMotor(motorDigest);
+
+		MotorConfiguration motorConfig = new MotorConfiguration(innerTube, fcid);
+		assertEquals(0.0, motorConfig.getNozzleExitDiameter());
+		motorConfig.setMotor(motor);
+		motorConfig.setEjectionDelay(5);
+		motorConfig.setNozzleExitDiameter(0.006);
+		innerTube.setMotorConfig(motorConfig, fcid);
+
+		rocket.enableEvents();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+		StorageOptions options = new StorageOptions();
+		options.setSaveSimulationData(false);
+
+		// Use GeneralRocketSaver to get a proper zip file with thrustcurves/ directory
+		File file = saveRocketAsZip(rocketDoc, options);
+
+		// Verify the .ork zip contains a thrustcurves/<digest>.rse entry
+		boolean foundRseEntry = false;
+		try (ZipFile zipFile = new ZipFile(file)) {
+			String entryName = "thrustcurves/" + motorDigest + ".rse";
+			ZipEntry rseEntry = zipFile.getEntry(entryName);
+			assertNotNull(rseEntry, "Expected " + entryName + " entry in .ork zip");
+			foundRseEntry = true;
+
+			// Verify the .rse file is parseable
+			try (InputStream rseStream = zipFile.getInputStream(rseEntry)) {
+				GeneralMotorLoader loader = new GeneralMotorLoader();
+				List<ThrustCurveMotor.Builder> motors = loader.load(rseStream, motorDigest + ".rse");
+				assertFalse(motors.isEmpty(), "Expected at least one motor from .rse file");
+				assertEquals(Motor.Type.UNKNOWN, motors.get(0).build().getMotorType());
+			}
+		}
+		assertTrue(foundRseEntry);
+
+		// Verify the motor round-trips through save/load
+		OpenRocketDocument rocketDocLoaded = loadRocket(file.getPath());
+		Rocket loadedRocket = rocketDocLoaded.getRocket();
+		FlightConfigurationId loadedFcid = loadedRocket.getSelectedConfiguration().getFlightConfigurationID();
+
+		MotorMount motorMount = null;
+		for (Iterator<RocketComponent> it = loadedRocket.iterator(true); it.hasNext();) {
+			RocketComponent c = it.next();
+			if (c instanceof MotorMount mount && mount.isMotorMount()) {
+				motorMount = mount;
+				break;
+			}
+		}
+		assertNotNull(motorMount, "Expected a motor mount in the loaded rocket");
+
+		MotorConfiguration loadedMotorConfig = motorMount.getMotorConfig(loadedFcid);
+		assertNotNull(loadedMotorConfig);
+		assertEquals(0.006, loadedMotorConfig.getNozzleExitDiameter());
+		Motor loadedMotor = loadedMotorConfig.getMotor();
+		assertNotNull(loadedMotor, "Expected motor to be loaded from embedded .rse file");
+		assertTrue(loadedMotor instanceof ThrustCurveMotor);
+
+		// Verify thrust curve data round-tripped correctly
+		ThrustCurveMotor loadedTCM = (ThrustCurveMotor) loadedMotor;
+		assertEquals(motor.getDesignation(), loadedTCM.getDesignation());
+		assertEquals(motor.getMotorType(), loadedTCM.getMotorType());
+		assertEquals(motor.getDigest(), loadedTCM.getDigest());
+		assertEquals(3, loadedTCM.getTimePoints().length);
+	}
+	
+	@Test
+	public void testPlotAppearanceSavedAndLoaded() {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+
+		Simulation sim = new Simulation(rocket);
+		sim.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+
+		// Set appearance for altitude (symbol "h"): custom color + dashed line
+		sim.setPlotAppearance(FlightDataType.TYPE_ALTITUDE,
+				new PlotAppearance(new ORColor(255, 0, 128, 200), LineStyle.DASHED));
+
+		// Set appearance for velocity (symbol "Vz"): color only, no line style override
+		sim.setPlotAppearance(FlightDataType.TYPE_VELOCITY_Z,
+				new PlotAppearance(new ORColor(0, 100, 200), null));
+
+		// Set appearance for acceleration (symbol "Az"): line style only, no color
+		sim.setPlotAppearance(FlightDataType.TYPE_ACCELERATION_Z,
+				new PlotAppearance(null, LineStyle.DOTTED));
+
+		rocketDoc.addSimulation(sim);
+
+		File file = saveRocket(rocketDoc, new StorageOptions());
+		OpenRocketDocument loaded = loadRocket(file.getPath());
+
+		assertEquals(1, loaded.getSimulations().size());
+		Simulation loadedSim = loaded.getSimulations().get(0);
+
+		// Verify altitude appearance (color + line style)
+		PlotAppearance altAppearance = loadedSim.getPlotAppearance(FlightDataType.TYPE_ALTITUDE);
+		assertNotNull(altAppearance, "Altitude appearance should have been saved");
+		assertNotNull(altAppearance.getColor(), "Altitude color should have been saved");
+		assertEquals(255, altAppearance.getColor().getRed());
+		assertEquals(0, altAppearance.getColor().getGreen());
+		assertEquals(128, altAppearance.getColor().getBlue());
+		assertEquals(200, altAppearance.getColor().getAlpha());
+		assertEquals(LineStyle.DASHED, altAppearance.getLineStyle());
+
+		// Verify velocity appearance (color only)
+		PlotAppearance velAppearance = loadedSim.getPlotAppearance(FlightDataType.TYPE_VELOCITY_Z);
+		assertNotNull(velAppearance, "Velocity appearance should have been saved");
+		assertNotNull(velAppearance.getColor(), "Velocity color should have been saved");
+		assertEquals(0, velAppearance.getColor().getRed());
+		assertEquals(100, velAppearance.getColor().getGreen());
+		assertEquals(200, velAppearance.getColor().getBlue());
+		assertEquals(255, velAppearance.getColor().getAlpha());
+		// Line style was null, so it should not be set
+		assertNull(velAppearance.getLineStyle());
+
+		// Verify acceleration appearance (line style only)
+		PlotAppearance accAppearance = loadedSim.getPlotAppearance(FlightDataType.TYPE_ACCELERATION_Z);
+		assertNotNull(accAppearance, "Acceleration appearance should have been saved");
+		assertNull(accAppearance.getColor(), "Acceleration color should be null");
+		assertEquals(LineStyle.DOTTED, accAppearance.getLineStyle());
+	}
+
+	@Test
+	public void testPlotAppearanceNotSavedWhenEmpty() {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+
+		Simulation sim = new Simulation(rocket);
+		sim.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+
+		// Set an empty appearance (both null) — should not be persisted
+		sim.setPlotAppearance(FlightDataType.TYPE_ALTITUDE, new PlotAppearance(null, null));
+
+		rocketDoc.addSimulation(sim);
+
+		File file = saveRocket(rocketDoc, new StorageOptions());
+		OpenRocketDocument loaded = loadRocket(file.getPath());
+
+		Simulation loadedSim = loaded.getSimulations().get(0);
+		assertNull(loadedSim.getPlotAppearance(FlightDataType.TYPE_ALTITUDE),
+				"Empty appearance should not be persisted");
+	}
+
+	@Test
+	public void testPlotAppearancePreservedAcrossMultipleSaves() {
+		Rocket rocket = TestRockets.makeEstesAlphaIII();
+		OpenRocketDocument rocketDoc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+
+		Simulation sim = new Simulation(rocket);
+		sim.setFlightConfigurationId(TestRockets.TEST_FCID_0);
+		sim.setPlotAppearance(FlightDataType.TYPE_ALTITUDE,
+				new PlotAppearance(new ORColor(10, 20, 30, 40), LineStyle.DASHDOT));
+		rocketDoc.addSimulation(sim);
+
+		// First round-trip
+		File file = saveRocket(rocketDoc, new StorageOptions());
+		OpenRocketDocument loaded = loadRocket(file.getPath());
+
+		// Second round-trip
+		file = saveRocket(loaded, new StorageOptions());
+		loaded = loadRocket(file.getPath());
+
+		Simulation loadedSim = loaded.getSimulations().get(0);
+		PlotAppearance appearance = loadedSim.getPlotAppearance(FlightDataType.TYPE_ALTITUDE);
+		assertNotNull(appearance, "Appearance should survive two round-trips");
+		assertEquals(10, appearance.getColor().getRed());
+		assertEquals(20, appearance.getColor().getGreen());
+		assertEquals(30, appearance.getColor().getBlue());
+		assertEquals(40, appearance.getColor().getAlpha());
+		assertEquals(LineStyle.DASHDOT, appearance.getLineStyle());
+	}
+
+	/**
+	 * Verifies that re-saving an example file with STORAGE_DECIMAL_PLACES=6 keeps the
+	 * compressed file size within a reasonable multiple of the original (which was saved
+	 * with the old 3dp format).  This acts as a regression guard: if precision or data
+	 * volume accidentally balloons, this test fails before users notice multi-MB files.
+	 *
+	 * Baseline (3dp, on-disk): "A simple model rocket.ork" ≈ 53,634 B compressed,
+	 * 2,580 datapoints.  With 6dp the uncompressed XML grows slightly, but ZIP's
+	 * DEFLATE compression keeps the compressed delta much smaller.
+	 */
+	@Test
+	public void testSavedFileSizeWithSimulationData() {
+		String resourcePath = "/datafiles/examples/A simple model rocket.ork";
+		URL url = OpenRocketSaverTest.class.getResource(resourcePath);
+		assertNotNull(url, "Example file not found on classpath: " + resourcePath);
+
+		File originalFile;
+		try {
+			originalFile = new File(new URI(url.toString().replace(" ", "%20")));
+		} catch (URISyntaxException e) {
+			fail("Could not resolve example file URI: " + e.getMessage());
+			return;
+		}
+		long originalSize = originalFile.length();  // ~53,634 B (3dp format, on-disk)
+		assertTrue(originalSize > 0, "Original example file is empty or missing");
+
+		OpenRocketDocument doc = loadRocket(originalFile.getPath());
+		assertNotNull(doc);
+
+		// Save without simulation data — establishes the component-only baseline.
+		StorageOptions optsNoSim = new StorageOptions();
+		optsNoSim.setSaveSimulationData(false);
+		long sizeNoSim = saveRocketAsZip(doc, optsNoSim).length();
+
+		// Save with simulation data — datapoints written at STORAGE_DECIMAL_PLACES=6.
+		StorageOptions optsWithSim = new StorageOptions();
+		optsWithSim.setSaveSimulationData(true);
+		long sizeWithSim = saveRocketAsZip(doc, optsWithSim).length();
+
+		// Simulation data must actually contribute to the file size.
+		assertTrue(sizeWithSim > sizeNoSim,
+				String.format("File with sim data (%,d B) should exceed file without (%,d B)", sizeWithSim, sizeNoSim));
+
+		// With 6dp the file grows compared to the 3dp original, but ZIP compression
+		// keeps growth well bounded.  4× is generous enough to handle the precision
+		// increase while catching accidental format regressions (e.g. STORAGE_DECIMAL_PLACES=100).
+		assertTrue(sizeWithSim < originalSize * 4,
+				String.format("Re-saved file (%,d B) exceeds 4× the original 3dp file (%,d B); "
+						+ "check STORAGE_DECIMAL_PLACES or unexpected data-volume changes", sizeWithSim, originalSize));
+	}
+
+	@Test
+	public void testDatapointPrecision() {
+		// Build a minimal rocket
+		Rocket rocket = new Rocket();
+		AxialStage stage = new AxialStage();
+		rocket.addChild(stage);
+		BodyTube tube = new BodyTube(0.3, 0.025, 0.002);
+		stage.addChild(tube);
+		rocket.enableEvents();
+		OpenRocketDocument doc = OpenRocketDocumentFactory.createDocumentFromRocket(rocket);
+
+		// A time value in the 0.001–0.1 s range: %.3f would store "0.012" (off by ~0.345 ms)
+		// but STORAGE_DECIMAL_PLACES=6 stores "0.012346" (within 1 µs of the original).
+		double precisionValue = 0.012345678;
+
+		FlightDataBranch branch = new FlightDataBranch("Sustainer",
+				FlightDataType.TYPE_TIME, FlightDataType.TYPE_ALTITUDE);
+		branch.addPoint();
+		branch.setValue(FlightDataType.TYPE_TIME, precisionValue);
+		branch.setValue(FlightDataType.TYPE_ALTITUDE, 1000.123456789);
+		branch.immute();
+
+		FlightData flightData = new FlightData(branch);
+
+		Simulation sim = new Simulation(doc, rocket, Simulation.Status.UPTODATE, "precision test",
+				new SimulationOptions(), Collections.emptyList(), flightData);
+		doc.addSimulation(sim);
+
+		StorageOptions opts = new StorageOptions();
+		opts.setSaveSimulationData(true);
+		File file = saveRocket(doc, opts);
+
+		OpenRocketDocument loaded = loadRocket(file.getPath());
+		assertNotNull(loaded);
+		assertFalse(loaded.getSimulations().isEmpty());
+
+		FlightData loadedData = loaded.getSimulations().get(0).getSimulatedData();
+		assertNotNull(loadedData, "Simulation data must be saved when saveSimulationData=true");
+
+		FlightDataBranch loadedBranch = loadedData.getBranch(0);
+		assertNotNull(loadedBranch);
+
+		List<Double> times = loadedBranch.getView(FlightDataType.TYPE_TIME);
+		assertNotNull(times);
+		assertFalse(times.isEmpty());
+
+		// Tolerance of 1e-6 s (1 µs): passes with STORAGE_DECIMAL_PLACES=6,
+		// would fail with the old DEFAULT_DECIMAL_PLACES=3 which stores only "0.012".
+		assertEquals(precisionValue, times.get(0), 1e-6,
+				"Time value lost precision in .ork round-trip — check STORAGE_DECIMAL_PLACES");
+	}
+
+	////////////////////////////////
+	/*
+	 * Utility Functions
+	 */
+
+	private int getCalculatedFileVersion(OpenRocketDocument rocketDoc) {
+		int fileVersion = this.saver.testAccessor_calculateNecessaryFileVersion(rocketDoc, null);
+		return fileVersion;
+	}
+	
+	private OpenRocketDocument loadRocket(String fileName) {
+		GeneralRocketLoader loader = new GeneralRocketLoader(new File(fileName));
+		OpenRocketDocument rocketDoc = null;
+		try {
+			rocketDoc = loader.load();
+		} catch (RocketLoadException e) {
+			e.printStackTrace();
+			fail("RocketLoadException while loading file " + fileName + " : " + e.getMessage());
+		}
+		return rocketDoc;
+	}
+	
+	private File saveRocketAsZip(OpenRocketDocument rocketDoc, StorageOptions options) {
+		File file = null;
+		try {
+			file = File.createTempFile(TMP_DIR.getName(), ".ork");
+			GeneralRocketSaver generalSaver = new GeneralRocketSaver();
+			generalSaver.save(file, rocketDoc, options);
+		} catch (Exception e) {
+			fail("Exception saving temp zip file: " + e.getMessage());
+		}
+		return file;
+	}
+
+	private File saveRocket(OpenRocketDocument rocketDoc, StorageOptions options) {
+		File file = null;
+		OutputStream out = null;
+		try {
+			file = File.createTempFile(TMP_DIR.getName(), ".ork");
+			out = new FileOutputStream(file);
+			this.saver.save(out, rocketDoc, options, new WarningSet(), new ErrorSet());
+		} catch (FileNotFoundException e) {
+			fail("FileNotFound saving temp file in: " + TMP_DIR.getName() + ": " + e.getMessage());
+		} catch (IOException e) {
+			fail("IOException saving temp file in: " + TMP_DIR.getName() + ": " + e.getMessage());
+		} finally {
+			try {
+				if (out != null) {
+					out.close();
+				}
+			} catch (IOException e) {
+				fail("Unable to close output stream for temp file in " + TMP_DIR.getName() + ": " + e.getMessage());
+			}
+		}
+		
+		return file;
+	}
+	
+	
+	private static ThrustCurveMotor readMotor() {
+		GeneralMotorLoader loader = new GeneralMotorLoader();
+		InputStream is = OpenRocketSaverTest.class.getResourceAsStream("/Estes_A8.rse");
+		assertNotNull(is, "Problem in unit test, cannot find Estes_A8.rse");
+		try {
+			for (ThrustCurveMotor.Builder m : loader.load(is, "Estes_A8.rse")) {
+				return m.build();
+			}
+			is.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+			fail("IOException: " + e);
+		}
+		throw new RuntimeException("Could not load motor");
+	}
+
+	/**
+	 * Build the custom motor used to exercise embedded RSE fallback.  Estes has a
+	 * known SINGLE default, making an explicitly UNKNOWN type observable on load.
+	 */
+	private static ThrustCurveMotor createEmbeddedTestMotor(String digest) {
+		return new ThrustCurveMotor.Builder()
+				.setManufacturer(Manufacturer.getManufacturer("Estes"))
+				.setDesignation("F12X")
+				.setDescription("Desc")
+				.setCaseInfo("info")
+				.setMotorType(Motor.Type.UNKNOWN)
+				.setStandardDelays(new double[] { 0, 3, 5, Motor.PLUGGED_DELAY })
+				.setDiameter(0.024)
+				.setLength(0.07)
+				.setTimePoints(new double[] { 0, 1, 2 })
+				.setThrustPoints(new double[] { 0, 1, 0 })
+				.setCGPoints(new CoordinateIF[] {
+						new Coordinate(0.035, 0, 0, 0.100),
+						new Coordinate(0.033, 0, 0, 0.070),
+						new Coordinate(0.031, 0, 0, 0.040)
+				})
+				.setDigest(digest)
+				.build();
+	}
+
+	/** Create the digest that would have been assigned by a RASP motor loader. */
+	private static String createRaspStyleDigest(ThrustCurveMotor motor) {
+		MotorDigest digest = new MotorDigest();
+		digest.update(MotorDigest.DataType.TIME_ARRAY, motor.getTimePoints());
+		digest.update(MotorDigest.DataType.MASS_SPECIFIC, motor.getLaunchMass(), motor.getBurnoutMass());
+		digest.update(MotorDigest.DataType.FORCE_PER_TIME, motor.getThrustPoints());
+		return digest.getDigest();
+	}
+	
+	public static class EmptyComponentDbProvider implements Provider<ComponentPresetDao> {
+		
+		final ComponentPresetDao db = new ComponentPresetDatabase();
+		
+		@Override
+		public ComponentPresetDao get() {
+			return db;
+		}
+	}
+
+	public static class MotorDbProvider implements Provider<ThrustCurveMotorSetDatabase> {
+		
+		final ThrustCurveMotorSetDatabase db = new ThrustCurveMotorSetDatabase();
+		
+		public MotorDbProvider() {
+			db.addMotor(readMotor());
+			db.addMotor(new ThrustCurveMotor.Builder()
+					.setManufacturer(Manufacturer.getManufacturer("A"))
+					.setDesignation("F12X")
+					.setDescription("Desc")
+					.setMotorType(Motor.Type.UNKNOWN)
+					.setStandardDelays(new double[] {})
+					.setDiameter(0.024)
+					.setLength(0.07)
+					.setTimePoints(new double[] { 0, 1, 2 })
+					.setThrustPoints(new double[] { 0, 1, 0 })
+					.setCGPoints(new CoordinateIF[] { Coordinate.NUL, Coordinate.NUL, Coordinate.NUL })
+					.setDigest("digestA")
+					.build());
+
+			assertEquals(2, db.getMotorSets().size());
+		}
+		
+		@Override
+		public ThrustCurveMotorSetDatabase get() {
+			return db;
+		}
+	}
+	
+	
+}

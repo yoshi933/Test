@@ -1,0 +1,248 @@
+package info.openrocket.core.file.openrocket.importt;
+
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+
+import info.openrocket.core.document.Attachment;
+import info.openrocket.core.file.DocumentLoadingContext;
+import info.openrocket.core.file.motor.GeneralMotorLoader;
+import info.openrocket.core.file.simplesax.AbstractElementHandler;
+import info.openrocket.core.file.simplesax.ElementHandler;
+import info.openrocket.core.file.simplesax.PlainTextHandler;
+import info.openrocket.core.logging.Warning;
+import info.openrocket.core.logging.WarningSet;
+import info.openrocket.core.motor.Motor;
+import info.openrocket.core.motor.MotorDigest;
+import info.openrocket.core.motor.ThrustCurveMotor;
+import info.openrocket.core.util.DecalNotFoundException;
+
+import org.xml.sax.SAXException;
+
+class MotorHandler extends AbstractElementHandler {
+	/** File version where latest digest format was introduced */
+	private static final int MOTOR_DIGEST_VERSION = 104;
+
+	private final DocumentLoadingContext context;
+	private Motor.Type type = null;
+	private String manufacturer = null;
+	private String designation = null;
+	private String digest = null;
+	private double diameter = Double.NaN;
+	private double length = Double.NaN;
+	private double delay = Double.NaN;
+	private double nozzleExitDiameter = 0.0;
+
+	public MotorHandler(DocumentLoadingContext context) {
+		this.context = context;
+	}
+
+	@Override
+	public ElementHandler openElement(String element, HashMap<String, String> attributes,
+			WarningSet warnings) {
+		return PlainTextHandler.INSTANCE;
+	}
+
+	/**
+	 * Resolve the {@link Motor} for this {@code <motor>} element.
+	 * <p>
+	 * Preference order:
+	 * <ol>
+	 *   <li>A database motor with a compatible digest, or any database match if no digest was saved.</li>
+	 *   <li>Embedded .rse file in the {@code thrustcurves/} directory of the .ork zip archive.</li>
+	 *   <li>An approximate database match if the embedded curve is unavailable.</li>
+	 * </ol>
+	 *
+	 * @param warnings warnings sink
+	 * @return the resolved motor, or {@code null} if not found/invalid
+	 */
+	public Motor getMotor(WarningSet warnings) {
+		// First try to locate an equivalent motor in the motor database.
+		WarningSet databaseWarnings = new WarningSet();
+		Motor databaseMotor = context.getMotorFinder().findMotor(type, manufacturer, designation, Double.NaN, Double.NaN, digest,
+				databaseWarnings);
+		if (databaseMotor != null && (digest == null || digest.isEmpty()
+				|| MotorDigest.isDigestCompatible(databaseMotor, digest))) {
+			warnings.addAll(databaseWarnings);
+			return databaseMotor;
+		}
+
+		// Try loading from embedded .rse file in the zip archive.
+		if (digest != null && !digest.isEmpty()) {
+			Motor zipMotor = loadMotorFromZip(digest, warnings);
+			if (zipMotor != null) {
+				return zipMotor;
+			}
+		}
+
+		// Retain the approximate database fallback for files without a usable embedded curve.
+		warnings.addAll(databaseWarnings);
+		return databaseMotor;
+	}
+
+	/**
+	 * Attempt to load a motor from a {@code thrustcurves/<digest>.rse} entry in the .ork zip archive.
+	 *
+	 * @param motorDigest the motor digest used as the filename
+	 * @param warnings warnings sink for an attachment that exists but cannot be used
+	 * @return the loaded motor, or {@code null} if the attachment is absent or invalid
+	 */
+	private Motor loadMotorFromZip(String motorDigest, WarningSet warnings) {
+		String attachmentName = "thrustcurves/" + motorDigest + ".rse";
+		try {
+			Attachment attachment = context.getAttachmentFactory().getAttachment(attachmentName);
+			try (InputStream is = attachment.getBytes()) {
+				GeneralMotorLoader loader = new GeneralMotorLoader();
+				List<ThrustCurveMotor.Builder> motors = loader.load(is, motorDigest + ".rse");
+				if (motors.isEmpty()) {
+					warnings.add(Warning.fromString("Embedded motor attachment '" + attachmentName
+							+ "' contains no motors."));
+					return null;
+				}
+
+				for (ThrustCurveMotor.Builder builder : motors) {
+					ThrustCurveMotor motor = builder.build();
+					if (MotorDigest.isDigestCompatible(motor, motorDigest)) {
+						// Keep the digest referenced by the ORK file stable across future saves.
+						return builder.setDigest(motorDigest).build();
+					}
+				}
+
+				warnings.add(Warning.fromString("Embedded motor attachment '" + attachmentName
+						+ "' contains no motor matching digest '" + motorDigest + "'."));
+			}
+		} catch (DecalNotFoundException | FileNotFoundException e) {
+			// Missing attachments are expected for files that rely on the motor database.
+			return null;
+		} catch (IOException | IllegalArgumentException e) {
+			String reason = e.getMessage();
+			if (reason == null || reason.isBlank()) {
+				reason = e.getClass().getSimpleName();
+			}
+			warnings.add(Warning.fromString("Unable to load embedded motor attachment '" + attachmentName
+					+ "': " + reason));
+		}
+		return null;
+	}
+
+	/**
+	 * Return the delay to use for the motor.
+	 */
+	public double getDelay(WarningSet warnings) {
+		if (Double.isNaN(delay)) {
+			warnings.add(Warning.fromString("Motor delay not specified, assuming no ejection charge."));
+			return Motor.PLUGGED_DELAY;
+		}
+		return delay;
+	}
+
+	/**
+	 * Return the optional nozzle exit diameter stored with the motor selection.
+	 *
+	 * @return nozzle exit diameter in metres, or zero when it was not specified
+	 */
+	public double getNozzleExitDiameter() {
+		return nozzleExitDiameter;
+	}
+
+	@Override
+	public void closeElement(String element, HashMap<String, String> attributes,
+			String content, WarningSet warnings) throws SAXException {
+
+		content = content.trim();
+
+		if (element.equals("type")) {
+
+			// Motor type
+			type = null;
+			for (Motor.Type t : Motor.Type.values()) {
+				if (t.name().toLowerCase(Locale.ENGLISH).equals(content.trim())) {
+					type = t;
+					break;
+				}
+			}
+			if (type == null) {
+				warnings.add(Warning.fromString("Unknown motor type '" + content + "', ignoring."));
+			}
+
+		} else if (element.equals("manufacturer")) {
+
+			// Manufacturer
+			manufacturer = content.trim();
+
+		} else if (element.equals("designation")) {
+
+			// Designation
+			designation = content.trim();
+
+		} else if (element.equals("digest")) {
+
+			// Digest is used only for file versions saved using the same digest algorithm
+			if (context.getFileVersion() >= MOTOR_DIGEST_VERSION) {
+				digest = content.trim();
+			}
+
+		} else if (element.equals("diameter")) {
+
+			// Diameter
+			diameter = Double.NaN;
+			try {
+				diameter = Double.parseDouble(content.trim());
+			} catch (NumberFormatException e) {
+				// Ignore
+			}
+			if (Double.isNaN(diameter)) {
+				warnings.add(Warning.fromString("Illegal motor diameter specified, ignoring."));
+			}
+
+		} else if (element.equals("length")) {
+
+			// Length
+			length = Double.NaN;
+			try {
+				length = Double.parseDouble(content.trim());
+			} catch (NumberFormatException ignore) {
+			}
+
+			if (Double.isNaN(length)) {
+				warnings.add(Warning.fromString("Illegal motor diameter specified, ignoring."));
+			}
+
+		} else if (element.equals("delay")) {
+
+			// Delay
+			delay = Double.NaN;
+			if (content.equals("none")) {
+				delay = Motor.PLUGGED_DELAY;
+			} else {
+				try {
+					delay = Double.parseDouble(content.trim());
+				} catch (NumberFormatException ignore) {
+				}
+
+				if (Double.isNaN(delay)) {
+					warnings.add(Warning.fromString("Illegal motor delay specified, ignoring."));
+				}
+
+			}
+
+		} else if (element.equals("nozzleexitdiameter")) {
+			try {
+				nozzleExitDiameter = Double.parseDouble(content.trim());
+			} catch (NumberFormatException ignore) {
+				nozzleExitDiameter = Double.NaN;
+			}
+			if (!Double.isFinite(nozzleExitDiameter) || nozzleExitDiameter < 0) {
+				warnings.add(Warning.fromString("Illegal nozzle exit diameter specified, assuming unknown."));
+				nozzleExitDiameter = 0.0;
+			}
+
+		} else {
+			super.closeElement(element, attributes, content, warnings);
+		}
+	}
+
+}

@@ -1,0 +1,9 @@
+allprojects {
+    if (project.path == ':core') {
+        tasks.register('printRuntimeClasspath') {
+            doLast {
+                configurations.runtimeClasspath.files.each { println it.absolutePath }
+            }
+        }
+    }
+}

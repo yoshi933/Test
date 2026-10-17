@@ -1,0 +1,15 @@
+{
+  "name": "openrocket-core-react-poc",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && vite build",
+    "dev": "vite --host 0.0.0.0 --port 8081",
+    "build:core": "bash scripts/build-core-runtime.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

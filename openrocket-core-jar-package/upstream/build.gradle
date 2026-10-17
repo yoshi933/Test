@@ -1,0 +1,420 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import com.github.jengelman.gradle.plugins.shadow.transformers.ApacheNoticeResourceTransformer
+import org.gradle.api.tasks.compile.JavaCompile
+
+plugins {
+    id 'com.gradleup.shadow' version '9.2.2'
+    id 'java'
+    id 'checkstyle'
+    id 'org.javamodularity.moduleplugin' version '2.0.0'
+    id 'application'
+    id 'jacoco'
+    id 'com.github.spotbugs' version '6.1.12' apply false
+}
+
+// Java settings
+java {
+    // Must be disabled in order to use the gradle-modules-plugin
+    modularity.inferModulePath = false
+}
+
+application {
+    mainModule = 'info.openrocket.swing'
+    mainClass = 'info.openrocket.swing.startup.OpenRocket'
+
+    /*applicationDefaultJvmArgs = [
+            // Use the system appearance on macOS for the FlatLaf title bar
+            '-Dapple.awt.application.appearance=system',
+            // Fix 3D importing on Windows
+            '--add-exports',
+            'java.base/java.lang=ALL-UNNAMED',
+            '--add-exports',
+            'java.desktop/sun.awt=ALL-UNNAMED',
+            '--add-exports',
+            'java.desktop/sun.java2d=ALL-UNNAMED',
+            // Fix Windows window ghosting (issue #1667),
+            '-Dsun.java2d.noddraw=true',
+            '-Dsun.java2d.d3d=false',
+            '-Dsun.java2d.ddforcevram=true',
+            '-Dsun.java2d.ddblit=false',
+            '-Dswing.useflipBufferStrategy=True'
+    ]*/
+}
+
+// Fetch the build version from the build.properties file
+def buildProperties = new Properties()
+file('core/src/main/resources/build.properties').withInputStream { buildProperties.load(it) }
+group = 'info.openrocket'
+version = buildProperties['build.version']
+
+def baseManifestAttributes = [
+        'Description'          : 'Model-rocketry aerodynamics and trajectory simulation software',
+        'SplashScreen-Image'   : 'pix/splashscreen.png',
+        'Implementation-Version': buildProperties['build.version'],
+        'Implementation-Vendor': 'OpenRocket',
+        'Implementation-Vendor-Id': 'info.openrocket',
+        'Implementation-URL'   : 'https://openrocket.info/',
+        'Main-Class'           : application.mainClass.get(),
+]
+
+// JaCoCo configuration
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+// Common project configuration
+allprojects {
+    repositories {
+        mavenCentral()
+        maven { url = "https://jitpack.io" }
+    }
+}
+
+// Standard GitHub-hosted Windows runners do not expose the hardware OpenGL context
+// required by the live AWTGLCanvas suites, while hosted macOS runners are not
+// reliable under repeated native canvas setup/teardown. Keep their compile and
+// non-GL test coverage while running the renderer tests on Linux. A capable
+// self-hosted Windows or macOS job can opt back in with
+// -Dopenrocket.test.runLiveOpenGl=true.
+def operatingSystemName = System.getProperty('os.name', '').toLowerCase(Locale.ROOT)
+def runningOnGitHubActionsWithoutReliableLiveOpenGl =
+        'true'.equalsIgnoreCase(System.getenv('GITHUB_ACTIONS'))
+                && (operatingSystemName.contains('windows') || operatingSystemName.contains('mac'))
+def excludeLiveOpenGlTests = Boolean.getBoolean('openrocket.test.excludeLiveOpenGl')
+        || (runningOnGitHubActionsWithoutReliableLiveOpenGl
+                && !Boolean.getBoolean('openrocket.test.runLiveOpenGl'))
+
+subprojects {
+    apply plugin: 'java'
+
+    // Java source files are UTF-8; otherwise javac uses the platform's default encoding.
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+
+    // Workaround for Windows "CreateProcess error=206" (command line too long).
+    //
+    // Windows limits CreateProcess to 32,767 chars. A JPMS build produces two sources of
+    // length: (a) -classpath with every JAR/directory, and (b) --module-path (added by the
+    // module plugin as a JVM arg) with every module JAR. Both must be shortened.
+    //
+    // Strategy:
+    //   (a) Classpath → manifest JAR: a tiny JAR whose Class-Path manifest attribute lists
+    //       every real entry. Directory entries need a trailing '/' or the JVM treats them as
+    //       ZIPs. Use setFrom() to mutate the FileCollection in-place (Gradle's worker
+    //       infrastructure holds a reference to the same object).
+    //   (b) JVM args → @argfile: Java 9+ supports "@/path/to/file" as a command-line
+    //       argument; the launcher expands it before parsing. Writing all JVM args to a temp
+    //       file and replacing jvmArgs with a single "@<path>" entry keeps that part short.
+    //
+    // The block MUST be registered before the module plugin is applied so that Gradle's
+    // LIFO doFirst ordering puts our action AFTER the module plugin's doFirst. The plugin
+    // then runs first (populating --module-path in jvmArgs), and our action runs second
+    // (moving everything to files).
+    if (System.properties['os.name'].toLowerCase().contains('windows')) {
+
+        Closure windowsLongCpFix = { task ->
+            doFirst {
+                // (a) Wrap classpath in a manifest JAR
+                def cpFiles = task.classpath.files
+                if (cpFiles) {
+                    def mf = new java.util.jar.Manifest()
+                    mf.mainAttributes.put(java.util.jar.Attributes.Name.MANIFEST_VERSION, '1.0')
+                    mf.mainAttributes.put(java.util.jar.Attributes.Name.CLASS_PATH,
+                        cpFiles.collect { f ->
+                            def url = f.toURI().toURL().toString()
+                            (f.isDirectory() && !url.endsWith('/')) ? url + '/' : url
+                        }.join(' '))
+                    def cpJar = new File(task.temporaryDir, 'classpath-manifest.jar')
+                    cpJar.parentFile.mkdirs()
+                    new java.util.jar.JarOutputStream(new java.io.FileOutputStream(cpJar), mf).close()
+                    task.classpath.setFrom(cpJar)
+                }
+
+                // (b) Move all JVM args into a @argfile so --module-path doesn't blow the limit.
+                //     One arg per line; quote entries that contain spaces.
+                def currentArgs = task.jvmArgs as List<String>
+                if (currentArgs) {
+                    def argFile = new File(task.temporaryDir, 'jvm.argfile')
+                    argFile.text = currentArgs.collect { arg ->
+                        arg.contains(' ') ? '"' + arg.replace('\\', '\\\\').replace('"', '\\"') + '"' : arg
+                    }.join('\n')
+                    task.jvmArgs = ['@' + argFile.absolutePath.replace('\\', '/')]
+                }
+            }
+        }
+
+        tasks.withType(Test).configureEach(windowsLongCpFix)
+        tasks.withType(JavaExec).configureEach(windowsLongCpFix)
+    }
+
+    apply plugin: "org.javamodularity.moduleplugin"
+    apply plugin: 'jacoco'
+    apply plugin: 'com.github.spotbugs'
+
+    // Configure the gradle-modules-plugin
+    modularity {
+        standardJavaRelease(17) // For targeting Java 17
+        modularity.patchModule("java.scripting", "script-api-1.0.jar")
+    }
+
+    test {
+        useJUnitPlatform {
+            excludeTags 'stress'
+            if (excludeLiveOpenGlTests) {
+                excludeTags 'requires-live-opengl'
+            }
+        }
+        finalizedBy jacocoTestReport
+
+        // The 3D tests drive real OpenGL contexts, so a failure there can be a native crash
+        // that takes the test JVM down rather than a failing assertion. Gradle reports only
+        // "finished with non-zero exit value 134"; the one record of what actually happened
+        // is the JVM's own hs_err_pid<pid>.log, which lands in the module directory where it
+        // is easily overlooked or cleaned away before anyone reads it. Keep those next to the
+        // rest of the test output so a crash that reproduces once is still diagnosable.
+        def crashReportDir = layout.buildDirectory.dir('test-crash-reports').get().asFile
+        doFirst {
+            crashReportDir.mkdirs()
+        }
+        jvmArgs "-XX:ErrorFile=${crashReportDir}/hs_err_pid%p.log"
+
+        // Give the forked test JVM a reliable heap instead of relying on JVM ergonomics,
+        // which can size the default heap too small under host memory pressure. Guice-backed
+        // tests (e.g. ScaleDialogBaseTest) trigger a ClassGraph classpath scan for @Plugin
+        // discovery, which is memory-hungry and was observed to OOM with the JVM default.
+        maxHeapSize = '1536m'
+
+        // Keep verification output independent of the host operating-system locale.
+        // These properties are applied when the test JVM starts, before locale-sensitive
+        // classes can cache formatting state.
+        systemProperty 'user.language', 'en'
+        systemProperty 'user.country', 'US'
+        systemProperty 'user.variant', ''
+
+        testLogging {
+            events 'PASSED', 'FAILED', 'SKIPPED', 'STANDARD_OUT'
+            exceptionFormat = 'full'
+            showStackTraces = true
+            stackTraceFilters = []
+        }
+    }
+
+    jacocoTestReport {
+        dependsOn test
+        reports {
+            xml.required = true
+            html.required = true
+            csv.required = false
+        }
+    }
+
+    spotbugs {
+        effort = com.github.spotbugs.snom.Effort.valueOf('MAX')
+        reportLevel = com.github.spotbugs.snom.Confidence.valueOf('HIGH')
+        excludeFilter = rootProject.file('config/spotbugs/excludeFilter.xml')
+    }
+
+    spotbugsMain {
+        reports {
+            html.required = true
+            xml.required = false
+        }
+    }
+
+    spotbugsTest.enabled = false
+
+    // Always evaluate coverage as part of the verification lifecycle
+    tasks.named('check') {
+        dependsOn jacocoTestCoverageVerification
+        dependsOn spotbugsMain
+    }
+
+    // Common dependencies
+    dependencies {
+        implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.4'
+
+        testImplementation 'org.junit.platform:junit-platform-runner:1.14.1'
+        testImplementation 'org.junit.platform:junit-platform-launcher:6.0.1'
+        testImplementation 'org.junit.jupiter:junit-jupiter-api:6.0.1'
+        testImplementation 'org.junit.jupiter:junit-jupiter-engine:6.0.1'
+        testImplementation 'org.junit.jupiter:junit-jupiter-params:6.0.1'
+
+        testImplementation 'org.mockito:mockito-core:5.10.0'
+        testImplementation 'org.mockito:mockito-junit-jupiter:5.10.0'
+    }
+}
+
+tasks.named('check') {
+    dependsOn(subprojects.collect { it.tasks.named('check') })
+}
+
+//tasks.register('serializeEngines') {
+//    dependsOn ':core:serializeEngines'
+//}
+
+// LWJGL version — must match swing/build.gradle
+def lwjglVersion = "3.4.2"
+
+configurations {
+    // All-platform LWJGL natives: resolved separately and merged into the shadow JAR
+    // so the distributed fat JAR runs on any supported OS/arch without rebuilding.
+    allPlatformNatives {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+}
+
+// JAR config
+jar {
+    archiveBaseName = 'OpenRocket'
+
+    // The license dialog links to this file inside the JAR
+    from(rootProject.file('LICENSE.TXT'))
+
+    manifest {
+        attributes(baseManifestAttributes)
+    }
+}
+
+// Collects the license and notice file of every bundled dependency into a directory of
+// its own. Dependencies that use the standard META-INF names all end up at the same path
+// in the shaded JAR, where the last file copied silently wins: 29 of the bundled JARs
+// ship a META-INF/LICENSE* and 18 a META-INF/NOTICE*, but only one file per name survives.
+def thirdPartyLicenseDir = layout.buildDirectory.dir('third-party-licenses')
+
+def collectThirdPartyLicenses = tasks.register('collectThirdPartyLicenses') {
+    group = 'build'
+    description = 'Collects the license and notice file of every bundled dependency.'
+
+    def runtimeClasspath = configurations.runtimeClasspath
+    inputs.files(runtimeClasspath).withPropertyName('runtimeClasspath')
+    outputs.dir(thirdPartyLicenseDir).withPropertyName('thirdPartyLicenseDir')
+
+    doLast {
+        def target = thirdPartyLicenseDir.get().asFile
+        delete(target)
+
+        runtimeClasspath.resolvedConfiguration.resolvedArtifacts.each { artifact ->
+            def module = artifact.moduleVersion.id
+            copy {
+                from(zipTree(artifact.file)) {
+                    include 'META-INF/LICENSE*'
+                    include 'META-INF/NOTICE*'
+                    // Flatten, so the files do not land in a nested META-INF directory
+                    eachFile { details -> details.path = details.name }
+                    includeEmptyDirs = false
+                }
+                into new File(target, "${module.group}.${module.name}")
+            }
+        }
+
+        // Drop the directories of the dependencies that ship no license file at all
+        target.listFiles()?.each { file ->
+            if (file.directory && file.list().length == 0) {
+                file.delete()
+            }
+        }
+    }
+}
+
+// Project dependencies
+dependencies {
+    implementation(project(path: ":core", configuration: "default"))
+
+    // All-platform LWJGL natives for cross-platform fat JAR distribution
+    allPlatformNatives platform("org.lwjgl:lwjgl-bom:${lwjglVersion}")
+    for (String platform : [
+            "natives-linux", "natives-linux-arm32", "natives-linux-arm64",
+            "natives-linux-ppc64le", "natives-linux-riscv64",
+            "natives-macos", "natives-macos-arm64",
+            "natives-windows", "natives-windows-arm64", "natives-windows-x86",
+            "natives-freebsd"]) {
+        allPlatformNatives "org.lwjgl:lwjgl::${platform}"
+        allPlatformNatives "org.lwjgl:lwjgl-opengl::${platform}"
+        allPlatformNatives "org.lwjgl:lwjgl-stb::${platform}"
+    }
+}
+
+tasks.named('shadowJar', ShadowJar) {
+    dependsOn(':core:processResources', collectThirdPartyLicenses)
+    archiveBaseName = 'OpenRocket'
+    archiveVersion = '' + version
+    archiveClassifier = ''
+    dependsOn(distTar, distZip)
+
+    // Merge all-platform natives so the fat JAR runs on any supported OS/arch
+    configurations = [project.configurations.runtimeClasspath,
+                      project.configurations.allPlatformNatives]
+
+    // Android native libraries are not used by the desktop distribution.
+    exclude 'org/sqlite/native/Linux-Android/**'
+
+    // The license dialog links to this file inside the JAR
+    from(rootProject.file('LICENSE.TXT'))
+
+    // Keep the license text of every dependency, not just the last one copied
+    from(thirdPartyLicenseDir) {
+        into 'META-INF/third-party-licenses'
+    }
+
+    // Concatenate the NOTICE files, as section 4d of the Apache License 2.0 requires,
+    // instead of letting one dependency's notice overwrite all of the others
+    transform(ApacheNoticeResourceTransformer) {
+        projectName = 'OpenRocket'
+    }
+
+    // Concatenate the service files as well, so no service provider is lost: both
+    // graal-js and its regex language register a Truffle language provider.
+    mergeServiceFiles()
+
+    // The task drops duplicate paths before the transformers above ever see them, which
+    // would leave only one of the ~18 notices and one of the two Truffle providers. Let
+    // the files that get merged through in full, while classes keep the default strategy:
+    // both a modular and a non-modular JNA are on the class path, and copying duplicate
+    // class entries into the JAR is exactly what the default strategy is there to avoid.
+    filesMatching(['META-INF/NOTICE', 'META-INF/NOTICE.txt', 'META-INF/NOTICE.md',
+                   'META-INF/services/*']) {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
+
+    manifest {
+        attributes(baseManifestAttributes)
+        attributes(
+                'Add-Exports': 'java.base/java.lang=ALL-UNNAMED java.desktop/sun.awt=ALL-UNNAMED java.desktop/sun.java2d=ALL-UNNAMED',
+                'JVM-Args': '-Dapple.awt.application.appearance=system -Dsun.java2d.noddraw=true -Dsun.java2d.d3d=false -Dsun.java2d.ddforcevram=true -Dsun.java2d.ddblit=false -Dswing.useflipBufferStrategy=True'
+        )
+    }
+}
+
+apply from: 'gradle/distributions.gradle'
+
+// jacoco aggregate report for all subprojects
+tasks.register('jacocoRootReport', JacocoReport) {
+    group = 'verification'
+    description = 'Generates an aggregate report from all subprojects'
+
+    dependsOn(tasks.named('test'))
+    dependsOn(subprojects.jacocoTestReport)
+
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+
+    // Collect execution data from all subprojects
+    executionData fileTree(project.rootDir.absolutePath).include("**/build/jacoco/*.exec")
+
+    // Collect class directories from all subprojects
+    classDirectories.setFrom(subprojects.sourceSets.main.output.classesDirs)
+}
+
+// Package the application for distribution.
+tasks.register('dist') {
+    group = 'info.openrocket'
+    dependsOn 'check', 'verifyDistributionJars'
+    doLast {
+        println "Completed the distribution JARs in './build/libs'."
+    }
+}
